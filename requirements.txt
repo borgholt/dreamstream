@@ -1,0 +1,25 @@
+black
+editdistance
+einops
+gpustat
+ipython
+jupyter
+jupyterlab-git
+nbstripout
+num2words
+numpy
+nvitop
+pandas
+pylint
+pytest
+pytest-cov
+pytest-html
+rich
+ruff
+tqdm
+more-itertools
+
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch
+torchvision
+torchaudio
