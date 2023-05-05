@@ -19,14 +19,3 @@ class AudioSample:
     id: Optional[str] = dataclasses.field(default_factory=lambda: uuid.uuid4().hex)
     file: Optional[str] = None
     file_metadata: Optional[torchaudio.backend.common.AudioMetaData] = None
-
-
-@dataclasses.dataclass()
-class StreamState:
-    """State associated with a batch of streamed input tensors."""
-    ids: list[str]
-    is_first: torch.BoolTensor
-    is_last: torch.BoolTensor
-    lengths: torch.IntTensor
-    chunk_index: torch.IntTensor
-    num_chunks: Optional[torch.IntTensor] = None
