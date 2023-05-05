@@ -2,11 +2,9 @@ import itertools
 import logging
 import math
 import pathlib
-import hashlib
 import time
 
-from typing import Dict, List, Callable, Optional, Tuple, Generator, Union
-from string import ascii_letters
+from typing import Dict, List, Callable, Optional, Generator, Union
 from tqdm import tqdm
 
 import random
@@ -116,7 +114,6 @@ class AudioStreamDataset(IterableDataset):
         num_frames = audio.shape[1]
 
         # Apply transforms
-        time.sleep(0.01)
         if self.transform:
             audio = self.transform(audio)
 
@@ -318,8 +315,8 @@ if __name__ == "__main__":
     datasets = AudioStreamDataset(file_list=source_df.filename, chunk_seconds=1.0, shuffle=False)
     loader = MultiStreamDataLoader(
         datasets,
-        batch_size=10,
-        num_workers=5,
+        batch_size=256,
+        num_workers=8,
         shuffle=False,
         drop_last=False,
         collate_fn=AudioStreamDataset.custom_collate,
