@@ -15,6 +15,41 @@ DreamStream is a Python package for making PyTorch models work efficiently in on
 </h3>
 
 
+## Interface
+
+```python
+ds.patch_module
+ds.StreamModule  # automatically patches itself after __init__
+
+ds.stream_tensor
+ds.StreamTensor
+
+ds.stream_state
+ds.StreamState
+
+ds.ChunkModule  # maybe functional similar to ds.patch_module
+
+
+
+class MyVerySpecialModel(StreamModule):
+  def __init__(self, asd, asd,asd):
+    super().__init__()
+    self.linear = nn.Linear(10, 10)
+
+
+mm = MyVerySpecialModel()
+
+
+class StreamModule(nn.Module):
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+
+  def when_init_is_done(self):
+    ds.patch_module(self)
+```
+
+
+
 ## What problem does this solve?
 
 PyTorch models are typically trained and evaluated on batches of data. However, in online settings, such as speech recognition, data is often streamed in one sample at a time. This means that the model must be able to process a single sample at a time, and that the model must be able to process the sample as soon as it is received. This is not possible with the standard PyTorch API, which requires the entire example to be collected before the model can be evaluated.
@@ -46,35 +81,21 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
 - Passing tensor with sequence lengths, first, last, and id among layers without breaking:
   - Batch object with data, sl, first, last, id attributes: Elementwise operations implemented outside Modules will break.
   - Subclass of Tensor with sl, first, last, id attributes: Elementwise operations implemented outside Modules will work but usually return new Tensor objects without these attributes.
+    - This can work by implementing a custom `__torch_function__` method that returns a new Tensor object with the attributes.
+    - We probably still need to deal with:
+      - operations that reorder the batch dimension (e.g. `torch.sort` or indexing): Apply the same reordering to the attributes. This happens in `collate_fn` and before `torch.nn.utils.rnn.pack_padded_sequence`.
+      - operations such as `cat`, `stack`, `vstack`, and `hstack` when used along the batch dim: Concatenate also the attributes along the batch dim. This happens in `collate_fn` but could also happen in models.
+      - operations that reduce the batch dimension (e.g. `torch.sum`): Reduce also the attributes along the batch dim. This happens in losses.
+      - operations that create new dimensions: Adjust `batch_dim` and `stream_dim` accordlingly. This could happen anywhere.
   - Seperate arguments to forward method: We can change all patched forward methods to take additional arguments, but, by default they won't be given (and we have no control).
-
-```python
-dataset = Dataset()  # __getitem__ returns a Sample
-
-def __getitem(self, idx: int):
-  file_name = get_filename(idx)
-  if file_name in self.cache:
-    data = self.cache[file_name]
-    return data[]
-  else:
-    sample = load_file(file_name)
-    self.cache[file_name] = sample
-    return sample
-    
-
-sampler = SequentialSampler(dataset)  # returns only integers in [0, len(dataset) / num_workers]
-loader = DataLoader(dataset, sampler, num_workers=4)
-
-
-
-```
 
 
 
 ## Cool features
 
 - Patched module can provide estimate of state size (can be used to estimate memory requirements for given input lengths).
-- Length-based sampling: When processing files in bulk, first sort them by length to minimize padding.
+- Length-based sampling: When processing files in bulk, first sort files by length to minimize padding.
+- Maybe we can support the EmFormer architecture.
 
 
 ## Installation

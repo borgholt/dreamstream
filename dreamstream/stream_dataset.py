@@ -17,7 +17,7 @@ import torchaudio
 from torch.utils.data import IterableDataset, DataLoader
 
 from dreamstream.data_objects import AudioSample
-from dreamstream.stream_tensor import StreamTensor, StreamState
+from dreamstream.stream_tensor import BATCH, LENGTH, StreamTensor, StreamState, stream_tensor
 
 
 LOGGER = logging.getLogger(__file__)
@@ -63,49 +63,20 @@ def partition_by_sum(
     return partitions, indices_partitions
 
 
-def force_is_last_on_last_batch(
-    stream: Generator[List[List[AudioSample]], None, None]
-) -> Generator[List[List[AudioSample]], None, None]:
-    # yield all but last batch
-    to_yield = next(stream)
-    for value in stream:
-        yield to_yield
-        to_yield = value
-
-    # yield last batch with is_last=True on all samples
-    for worker_outputs in to_yield:
-        for sample in worker_outputs:
-            sample.is_last = True
-
-    yield to_yield
-
-
 def concatenate_ragged(
     batch: List[torch.Tensor], pad_value: float = 0, dim: int = -1
 ) -> Tuple[torch.LongTensor, torch.LongTensor]:
-    """Zero pad batch of tensors of some shape (*, dim, *) to maximum temporal length and concatenate"""
-    sequence_lengths = [tensor.shape[dim] for tensor in batch]
+    """Concatenate a batch of tensors of some shape (*, dim, *) where `dim` may have different size.
 
-    N = len(batch)
-    T = max(sequence_lengths)
-
-    # get shape of batch with full temporal dimension
-    collated_shape = list(batch[0].shape)
-    collated_shape[dim] = T
-    collated_shape = [N] + collated_shape  # (B, *, D, *)
-
-    # move padding dimension to end to allow easy indexing into collated_batch below
-    collated_shape[dim], collated_shape[-1] = collated_shape[-1], collated_shape[dim]  # (B, *, D)
-
-    dtype = batch[0].dtype
-    collated_batch = torch.full(collated_shape, dtype=dtype, fill_value=pad_value)  # (B, *, D)
-    for i, seq_len in enumerate(sequence_lengths):
-        collated_batch[i, ..., :seq_len] = batch[i].transpose(dim, -1)
-
-    # revert transpose
-    collated_batch = collated_batch.transpose(dim, -1)  # (B, *, D, *)
-
-    return collated_batch, torch.LongTensor(sequence_lengths)
+    The output tensor has shape (batch, *, dim, *)."""
+    # convert to positive dim.
+    dim = dim if dim >= 0 else len(batch[0].shape) + dim
+    
+    # move temporal dimension to beginning and pad with torch.nn.utils.rnn.pad_sequence.
+    batch = [b.transpose(dim, 0) for b in batch]  # (dim, *)
+    batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=pad_value)  # (batch, dim, *)
+    batch = batch.transpose(dim + 1, 1)  # (batch, *, dim, *)
+    return batch
 
 
 class AudioStreamDataset(IterableDataset):
@@ -113,8 +84,9 @@ class AudioStreamDataset(IterableDataset):
         self,
         file_list: List[str],
         chunk_seconds: float = 1.0,
+        names: List[str] = None,
         transform: Callable = None,
-        file_metadata: Dict[str, torchaudio.backend.common.AudioMetaData] = None,
+        file_metadata: Dict[str, torchaudio.backend.common.AudioMetaData] = None,  # TODO (JDH): Maybe delete
         batch_size: Optional[int] = 1,
         shuffle: Optional[bool] = False,
         drop_last: Optional[bool] = False,
@@ -150,8 +122,8 @@ class AudioStreamDataset(IterableDataset):
         self.shuffle = shuffle
         self.drop_last = drop_last
 
-        self.file_metadata = file_metadata or self.get_file_metadata()
-        self.file_lengths = {file: m.num_frames / m.sample_rate for file, m in self.file_metadata.items()}
+        self.file_metadata = file_metadata or self.get_file_metadata()  # TODO: Delete?
+        self.file_lengths = {file: m.num_frames / m.sample_rate for file, m in self.file_metadata.items()}  # TODO: Del?
 
     @property
     def batch_size(self):
@@ -168,12 +140,28 @@ class AudioStreamDataset(IterableDataset):
         iterator = tqdm(self.file_list, desc="Getting file metadata", unit="file", delay=5)
         return {file: torchaudio.info(file) for file in iterator}
 
+    @staticmethod
+    def force_is_last_on_last_batch(
+        stream: Generator[List[AudioSample], None, None]
+    ) -> Generator[List[AudioSample], None, None]:
+        # yield all but last batch
+        to_yield = next(stream)
+        for value in stream:
+            yield to_yield
+            to_yield = value
+
+        # yield last batch with is_last=True on all samples
+        for sample in to_yield:
+            sample.is_last = True
+
+        yield to_yield
+
     def process_data(self, file: str) -> Generator[AudioSample, None, None]:
         # TODO (JDH): For vseq, we can generalize this to support several modalities with Loader classes by adding
         #             a Chunker class per modality that splits a loaded file into chunks.
         # Load file
         file_metadata = self.file_metadata[file]
-        audio, sample_rate = torchaudio.load(file)
+        audio, sample_rate = torchaudio.load(file)  # (C, L)
         num_frames = audio.shape[-1]
 
         # Apply transforms
@@ -221,6 +209,7 @@ class AudioStreamDataset(IterableDataset):
         data_streams = [self.get_stream(file_list[i :: self.batch_size]) for i in range(self.batch_size)]
         if self.drop_last:
             data_stream = zip(*data_streams)
+            data_stream = self.force_is_last_on_last_batch(data_stream)
         else:
             data_stream = itertools.zip_longest(*data_streams)
             data_stream = (list(filter(lambda x: x is not None, batch_parts)) for batch_parts in data_stream)
@@ -237,19 +226,20 @@ class AudioStreamDataset(IterableDataset):
         batch = sorted(batch, key=lambda x: x.length, reverse=True)
 
         data = [sample.data for sample in batch]
-        data, lengths = concatenate_ragged(data, dim=-1)
+        data = concatenate_ragged(data, dim=-1)
+        # import IPython
+        # IPython.embed(using=False)
+        # data = data.rename(BATCH, LENGTH)
 
         # collate batch metadata
+        lengths = torch.tensor([sample.length for sample in batch])
         is_first = torch.tensor([sample.is_first for sample in batch])
         is_last = torch.tensor([sample.is_last for sample in batch])
-        chunk_index = torch.tensor([sample.chunk_index for sample in batch])
-        num_chunks = torch.tensor([sample.num_chunks for sample in batch])
         ids = [sample.id for sample in batch]
 
         # create stream tensor and its state
-        stream_state = StreamState(ids, is_first, is_last, lengths, chunk_index, num_chunks)
-        stream_tensor = StreamTensor(data, stream_state=stream_state)
-        return stream_tensor
+        batch = stream_tensor(data, ids, is_first, is_last, lengths)
+        return batch
 
     def split(self, max_workers: int, batch_size: int, shuffle: bool, drop_last: bool):
         """Split the dataset into multiple datasets, each with a unique of the data."""
@@ -360,7 +350,7 @@ class MultiStreamDataLoader:
 
         return wrapped_worker_init_fn
 
-    def get_stream_loaders(self) -> Generator[List[AudioSample], None, None]:
+    def get_stream_loaders(self) -> Generator:
         if isinstance(self.dataset, IterableDataset):
             num_workers = max(1, self.num_workers)
             datasets = self.dataset.split(
@@ -378,23 +368,23 @@ class MultiStreamDataLoader:
         ]
 
         if self.drop_last:
-            # zip only where all streams have data and set is_last on all AudioSamples in last batch.
+            # zip only batch parts where all streams have data.
             stream_loaders = zip(*stream_loaders)
-            stream_loaders = force_is_last_on_last_batch(stream_loaders)
         else:
-            # zip longest and filter out None values which are returned when a stream has run out of data.
+            # zip all batch parts and filter out None values (which are returned when a stream has run out of data).
             stream_loaders = itertools.zip_longest(*stream_loaders)
             stream_loaders = (filter(lambda x: x is not None, batch_parts) for batch_parts in stream_loaders)
 
         # flatten batches from Generator[List[List[AudioSample]]] to Generator[List[AudioSample]].
         stream_loader = (list(itertools.chain.from_iterable(batch_parts)) for batch_parts in stream_loaders)
 
+        # collate batches
+        stream_loader = (self.collate_fn(batch) for batch in stream_loader)
         return stream_loader
 
     def __iter__(self):
-        for batch_parts in self.get_stream_loaders():
-            collated_batch = self.collate_fn(batch_parts)
-            yield collated_batch
+        for batch in self.get_stream_loaders():
+            yield batch
 
 
 if __name__ == "__main__":
@@ -408,9 +398,9 @@ if __name__ == "__main__":
     loader = MultiStreamDataLoader(
         datasets,
         batch_size=8,
-        num_workers=4,
+        num_workers=2,
         shuffle=True,
-        drop_last=False,
+        drop_last=True,
         collate_fn=AudioStreamDataset.custom_collate,
     )
 
@@ -447,5 +437,5 @@ if __name__ == "__main__":
         )
         print(f"Samples seen: {len(samples_seen)}")
 
-    import IPython
-    IPython.embed(using=False)
+    # import IPython
+    # IPython.embed(using=False)
