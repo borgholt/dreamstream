@@ -94,10 +94,6 @@ class StreamState():
 
                 
 
-def set_padding_to_zero(x, sl):
-    # TODO: Implement
-    return x
-
 
 
 def conv_1d_streaming_forward(self, input):
@@ -183,12 +179,7 @@ def online(self, mode=True):
 
 def offline(self):
     return self.online(mode=False)
-    
-def add_bound_method_state_template_(module, template):
-    module._state_template = types.MethodType(template, module)
 
-def conv_1d_state_template(self, data):
-    return dict(data=None)
 
 def conv_1d_module_specific_streaming(self, mode):
     if mode:
@@ -204,8 +195,7 @@ def patch_conv_1d(module):
     module.offline = types.MethodType(offline, module)
     module.streaming = False
     
-    # add input_states
-    module._state_template = types.MethodType(conv_1d_state_template, module)
+    # add input_states dictionary
     module.input_states = {}
     
     # verify padding behavior
