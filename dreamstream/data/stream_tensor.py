@@ -1,13 +1,13 @@
+import uuid
+import math
 import itertools
-
+import functools
 from typing import Callable, List, Tuple, Optional, Union
 
-import functools
-import uuid
 
 import torch
-
 from torch import Tensor
+from torch.nn.utils.rnn import pad_sequence
 
 
 BATCH = "B"
@@ -93,10 +93,11 @@ class StreamState:
 
     def filter(self, mask: torch.BoolTensor):
         """Keep only the batch examples where the mask is True."""
-        self.is_first = self.is_first[mask]
-        self.is_last = self.is_last[mask]
-        self.lengths = self.lengths[mask]
-        self.ids = [id for i, id in enumerate(self.ids) if mask[i]]
+        if not mask.all():
+            self.is_first = self.is_first[mask]
+            self.is_last = self.is_last[mask]
+            self.lengths = self.lengths[mask]
+            self.ids = [id for i, id in enumerate(self.ids) if mask[i]]
 
     def __repr__(self):
         return f"StreamState(size={self.size()})"
@@ -182,6 +183,7 @@ class StreamTensor(torch.Tensor):
             kwargs = dict()
 
         is_handled = func in STREAM_TENSOR_FUNCTIONS and all(issubclass(t, (torch.Tensor, StreamTensor)) for t in types)
+        print(f"\n\n{func.__name__}: {is_handled}\n\n")
         if is_handled:
             return STREAM_TENSOR_FUNCTIONS[func](*args, **kwargs)
 
@@ -305,7 +307,7 @@ def require_all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]], messa
 
 
 def implements(torch_function):
-    """Register a torch function override for ScalarTensor"""
+    """Register a torch function override for StreamTensor."""
 
     def decorator(func):
         functools.update_wrapper(func, torch_function)
@@ -320,6 +322,7 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     """If dim is the batch dimension of any StreamTensor, assert all are StreamTensors and concatenate the stream 
     states as well. Else, call torch.cat.
     """
+    
     # Concatenation of at least one StreamTensor along the batch dimension.
     is_batch_dim = [t._is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]
     if any(is_batch_dim):
@@ -341,6 +344,21 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
         raise NotImplementedError("Concatenating along the length dimension is not yet supported.")
     
     return torch.cat(tensors, dim=dim, out=out)
+
+# TODO: Should the typing for tensor below be just StreamTensor? Or does it need to be a Union?
+@implements(torch.permute)
+def permute(tensor: Union[StreamTensor, Tensor], dims):
+    
+    if all(isinstance(dim, int) for dim in dims):
+        if all(n is None for n in tensor.names):
+            return tensor.permute(*dims)
+        dims = [tensor.names[dim] for dim in dims]
+
+    if not (set(tensor.names) == set(dims)):
+        raise ValueError("Permutation dims must be a permutation of tensor names.")
+    
+    return tensor.align_to(*dims)
+        
 
 
 # @implements(torch.stack)
@@ -377,24 +395,124 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
 # @implements(torch.transpose)
 # @implements(torch.permute)
 
-class LongformList(list):
+def stream_tensor_from_longform_list(
+    data,
+    names: List[str] = None,
+    ids: Union[str, List[str]] = None,
+    dtype: torch.dtype = None,
+    device: torch.device = None,
+    requires_grad: bool = False,
+    pin_memory: bool = False,
+) -> StreamTensor:
+    
+    if names is None:
+        names = data[0].names
+    
+    if BATCH in names:
+        raise ValueError("The data must not have a batch dimension.")
+    if LENGTH not in names:
+        raise ValueError("The data must have a length dimension.")
+    
+    length_index = names.index(LENGTH)
+    if length_index != 0:
+        permute_order = (length_index,) + tuple(i for i in range(len(names)) if i != length_index)
+        data = [t.permute(*permute_order) for t in data]
+        
+    names = (LENGTH, BATCH) + tuple(n for n in names if n != LENGTH)
+    tensor = pad_sequence(data)
+    tensor = tensor.refine_names(*names)
+    
+    is_first = torch.full((len(data),), True, dtype=torch.bool, device=device)
+    is_last = torch.full((len(data),), True, dtype=torch.bool, device=device)
+    
+
+    
+    
+    
+    
+
+class ChunkedList(list):
     
     def __init__(
         self,
-        tensors: Union(List[torch.Tensor], List[StreamTensor]),
+        data: Union[List[torch.Tensor], List[StreamTensor]],
         ids: List[str],
+        chunk_size: int,
+        device: torch.device = None,
+        iterator_device: torch.device = None,
         names: Union[List[str], Tuple[str]] = None
     ):
         
+        # ensure that names are set correctly for all tensors
         if names is not None:
-            tensors = [t.refine_names(*names) for t in tensors]
+            data = [t.rename(*names) for t in data] # will overwrite names if already named
+        else:
+            names = data[0].names
+            if not all(t.names == names for t in data):
+                raise ValueError("All tensors must have the same names.")
+        if BATCH in names:
+            raise ValueError("The data must not have a batch dimension.")
+        if LENGTH not in names:
+            raise ValueError("The data must have a length dimension.")
+        
+        # move length dimension to front, if necessary
+        if names[0] != LENGTH:
+            align_names = (LENGTH,) + tuple(n for n in names if n != LENGTH)
+            data = [t.align_to(*align_names) for t in data]
+        
+        # pad tensors to a batch of longform tensors with shape (L, B, ...)
+        names = (LENGTH, BATCH) + tuple(n for n in names if n != LENGTH)
+        lengths = torch.as_tensor([t.size(LENGTH) for t in data])
+        tensor = pad_sequence(data)
+        if device is not None:
+            tensor = tensor.to(device)
+        
+        # chunk up the longform tensor and store as list of stream tensors
+        num_chunks = torch.ceil(lengths / chunk_size).to(torch.int)
+        max_chunks = num_chunks.max().item()
+        for i in range(max_chunks):
+            
+            # create stream state
+            is_first = torch.full((tensor.size(1),), i == 0, dtype=torch.bool)
+            is_last = num_chunks == (i + 1)
+            chunk_lengths = torch.clip(lengths - (i * chunk_size), min=0, max=chunk_size)
+            stream_state = StreamState(ids, is_first, is_last, chunk_lengths)
+            mask = chunk_lengths > 0
+            stream_state.filter(mask)
+            
+            # create chunk
+            start = i * chunk_size
+            end = start + chunk_size
+            chunk = tensor[start:end, mask].refine_names(*names)
+            chunk = StreamTensor(chunk, stream_state)
+            self.append(chunk)
+        
+        self.chunk_size = chunk_size
+        self.names = names
+        self.lengths = lengths
+        self.num_chunks = num_chunks
+        
+        
+        
+        
+class StreamOutputCollector(dict):
+        
+    def update(self, stream_tensor: StreamTensor):
+        for name, tensor in stream_tensor.items():
+            if name not in self:
+                self[name] = []
+            self[name].append(tensor)
+        
+        
+        
+        
         
     
 
 if __name__ == "__main__":
     x = torch.randn(32, 128, 56).tolist()
     ids = [uuid.uuid4().hex for _ in range(32)]
-    names = [BATCH, LENGTH, "feature"]
+    names = [BATCH, LENGTH, "F"]
     is_first = torch.tensor([True, True, True] + [False] * 29)
     is_last = torch.tensor([False] * 29 + [True, True, True])
     lengths = torch.randint(20, 56, (32,))
@@ -415,8 +533,13 @@ if __name__ == "__main__":
     c1 = torch.cat([s, s], dim=0)
     
     a = torch.randn(32, 128, 56)
-    # c2 = torch.cat([s, a], dim=0)
     
+    p1 = torch.permute(s, (2, 0, 1)) # WORKS
+    p2 = permute(s, ("F", LENGTH, BATCH)) # WORKS
+    #p3 = torch.permute(s, ("F", LENGTH, BATCH)) # DOES NOT WORK - does not seem to go into __torch_function__
+    # c2 = torch.cat([s, a], dim=0)
 
-    import IPython
-    IPython.embed(using=False)
+    from random import randint
+    tensors = [torch.rand(256, randint(50, 100)) for _ in range(4)]
+    ids = [uuid.uuid4().hex for _ in range(4)]
+    l = LongformList(tensors=tensors, ids=ids, chunk_size=20, names=("F", LENGTH))
