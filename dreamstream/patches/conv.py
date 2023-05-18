@@ -5,7 +5,7 @@ from copy import deepcopy
 import torch
 import torch.nn.functional as F
 
-from dreamstream.data.stream_tensor import StreamTensor, StreamState
+from dreamstream.tensor import StreamTensor, StreamState
 from dreamstream.patches.general import online, offline
 
 def conv_1d_streaming_forward(self, input):

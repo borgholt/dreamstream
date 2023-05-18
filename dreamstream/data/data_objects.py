@@ -1,10 +1,13 @@
-import dataclasses
 import uuid
-
-from typing import Optional
+import dataclasses
+from typing import Optional, Union, List, Tuple
 
 import torch
 import torchaudio
+from torch.nn.utils.rnn import pad_sequence
+
+from dreamstream.tensor import StreamTensor, StreamState
+from dreamstream.utils.flags import BATCH, LENGTH
 
 
 @dataclasses.dataclass()
@@ -19,3 +22,75 @@ class AudioSample:
     id: Optional[str] = dataclasses.field(default_factory=lambda: uuid.uuid4().hex)
     file: Optional[str] = None
     file_metadata: Optional[torchaudio.backend.common.AudioMetaData] = None
+
+
+class ChunkedList(list):
+    
+    def __init__(
+        self,
+        data: Union[List[torch.Tensor], List[StreamTensor]],
+        ids: List[str],
+        chunk_size: int,
+        device: torch.device = None,
+        iterator_device: torch.device = None,
+        names: Union[List[str], Tuple[str]] = None
+    ):
+        
+        # ensure that names are set correctly for all tensors
+        if names is not None:
+            data = [t.rename(*names) for t in data] # will overwrite names if already named
+        else:
+            names = data[0].names
+            if not all(t.names == names for t in data):
+                raise ValueError("All tensors must have the same names.")
+        if BATCH in names:
+            raise ValueError("The data must not have a batch dimension.")
+        if LENGTH not in names:
+            raise ValueError("The data must have a length dimension.")
+        
+        # move length dimension to front, if necessary
+        if names[0] != LENGTH:
+            align_names = (LENGTH,) + tuple(n for n in names if n != LENGTH)
+            data = [t.align_to(*align_names) for t in data]
+        
+        # pad tensors to a batch of longform tensors with shape (L, B, ...)
+        names = (LENGTH, BATCH) + tuple(n for n in names if n != LENGTH)
+        lengths = torch.as_tensor([t.size(LENGTH) for t in data])
+        tensor = pad_sequence(data)
+        if device is not None:
+            tensor = tensor.to(device)
+        
+        # Chunk up the longform tensor and store as list of stream tensors.
+        num_chunks = torch.ceil(lengths / chunk_size).to(torch.int)
+        chunks = torch.split(tensor, chunk_size, dim=0)
+        for i, chunk in enumerate(chunks):
+            
+            # Create stream state.
+            is_first = torch.full((tensor.size(1),), i == 0, dtype=torch.bool)
+            is_last = num_chunks == (i + 1)
+            chunk_lengths = torch.clip(lengths - (i * chunk_size), min=0, max=chunk_size)
+            stream_state = StreamState(ids, is_first, is_last, chunk_lengths)
+            
+            # Discard empty sequences.
+            mask = chunk_lengths > 0
+            stream_state.filter(mask)
+            chunk = chunk[:, mask].refine_names(*names) # TODO: After implementing masked select, call refine names earlier.
+            
+            # Convert to stream tensor chunk.
+            chunk = StreamTensor(chunk, stream_state)
+            self.append(chunk)
+        
+        self.chunk_size = chunk_size
+        self.names = names
+        self.lengths = lengths
+        self.num_chunks = num_chunks
+        
+        
+class OutputCollector(dict):
+        
+    def update(self, stream_tensor: StreamTensor):
+        for name, tensor in stream_tensor.items():
+            if name not in self:
+                self[name] = []
+            self[name].append(tensor)
+        
