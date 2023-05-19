@@ -1,0 +1,4 @@
+
+
+BATCH = "B"
+LENGTH = "L"
