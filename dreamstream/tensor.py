@@ -10,8 +10,10 @@ import numpy as np
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
-from dreamstream.overrides import STREAM_TENSOR_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
+
+
+STREAM_TENSOR_FUNCTIONS = dict()
 
 
 class StreamState:
@@ -44,7 +46,7 @@ class StreamState:
         is_first = torch.as_tensor(is_first, dtype=torch.bool)
         is_last = torch.as_tensor(is_last, dtype=torch.bool)
         lengths = torch.as_tensor(lengths, dtype=torch.int)
-        
+
         if not all(isinstance(i, str) for i in ids):
             raise ValueError("ids must be a list of strings.")
 
@@ -55,34 +57,33 @@ class StreamState:
         self.is_first = is_first
         self.is_last = is_last
         self.lengths = lengths
-        
+
         self._any_first = self.is_first.any().item()
         self._any_last = self.is_last.any().item()
-        
+
         self._all_first = self.is_first.all().item()
         self._all_last = self.is_last.all().item()
-        
+
         self._any_first_or_last = self._any_first or self._any_last
 
     def __len__(self):
         return len(self.ids)
-    
+
     def __add__(self, other):
-        
         if self.ids != other.ids:
             raise ValueError("Cannot add StreamStates with different ids.")
-        
+
         lengths = self.lengths + other.lengths
         is_first = self.is_first | other.is_first
         is_last = self.is_last | other.is_last
-        
+
         return StreamState(
             ids=deepcopy(self.ids),
             is_first=is_first,
             is_last=is_last,
             lengths=lengths,
         )
-    
+
     def __radd__(self, other):
         if other == 0:
             return self
@@ -92,19 +93,18 @@ class StreamState:
     @property
     def _first_lengths(self):
         return self.lengths[self.is_first]
-    
+
     @property
     def _last_lengths(self):
         return self.lengths[self.is_last]
-    
+
     @_first_lengths.setter
     def _first_lengths(self, i):
         self.lengths[self.is_first] = i
-    
+
     @_last_lengths.setter
     def _last_lengths(self, i):
         self.lengths[self.is_last] = i
-
 
     def size(self):
         return len(self)
@@ -140,22 +140,22 @@ class StreamState:
         is_last = torch.cat([s.is_last for s in stream_states], dim=0)
         lengths = torch.cat([s.lengths for s in stream_states], dim=0)
         return cls(ids, is_first, is_last, lengths)
-    
+
     def split_batch(self, split_size_or_sections: Union[int, List[int]]) -> List["StreamState"]:
         """Split a StreamState object into a list of StreamState objects along the batch dimension.
 
         Args:
             split_size_or_sections (Union[int, List[int]]): Size of a single chunk or list of sizes for each chunk.
-        
+
         Returns:
             List[StreamState]: The split StreamState objects.
         """
         if isinstance(split_size_or_sections, list) and sum(split_size_or_sections) != len(self):
             raise ValueError("Sum of split sizes must equal the size of the StreamState object.")
-        
+
         if isinstance(split_size_or_sections, int):
             start = range(0, len(self), split_size_or_sections)
-            split_ids = [self.ids[i:i+split_size_or_sections] for i in start]
+            split_ids = [self.ids[i : i + split_size_or_sections] for i in start]
         else:
             slices = np.cumsum([0] + split_size_or_sections)
             split_ids = [self.ids[i:j] for i, j in zip(slices[:-1], slices[1:])]
@@ -166,37 +166,37 @@ class StreamState:
         args_iter = zip(split_ids, split_first, split_last, split_lengths)
 
         return [stream_state(*args) for args in args_iter]
-    
+
     def split_length(self, split_size_or_sections: Union[int, List[int]]) -> List["StreamState"]:
         """Split a StreamState object into a list of StreamState objects along the length dimension.
 
         Args:
             split_size_or_sections (Union[int, List[int]]): Size of a single chunk or list of sizes for each chunk.
-        
+
         Returns:
             List[StreamState]: The split StreamState objects.
         """
         max_length = self.lengths.max().item()
         if isinstance(split_size_or_sections, list) and sum(split_size_or_sections) < max_length:
             raise ValueError("Sum of split sizes must be equal to (or larger than) the maximum length.")
-        
+
         if isinstance(split_size_or_sections, int):
             start = np.arange(0, max_length, split_size_or_sections)
             end = (start + split_size_or_sections).clip(max=max_length)
         else:
             end = np.cumsum(split_size_or_sections)
             start = np.concatenate(([0], end[:-1]))
-        
+
         # TODO: Something like this should be the standard for slicing the StreamState object
         def substate(i, j):
-            lengths = (self.lengths - i).clip(min=0, max=j-i)
+            lengths = (self.lengths - i).clip(min=0, max=j - i)
             is_first = self.is_first.clone() if (j > 0) and (i == 0) else torch.zeros_like(self.is_first)
             is_last = (i < self.lengths) & (self.lengths <= j)
             ids = deepcopy(self.ids)
             return stream_state(ids, is_first, is_last, lengths)
-               
+
         return [substate(i, j) for i, j in zip(start, end)]
-    
+
     def split(self, split_size_or_sections: Union[int, List[int]], dim: str) -> List["StreamState"]:
         if dim not in (LENGTH, BATCH):
             raise ValueError(f"Invalid dimension: {dim}")
@@ -204,7 +204,7 @@ class StreamState:
             return self.split_length(split_size_or_sections)
         else:
             return self.split_batch(split_size_or_sections)
-    
+
     def unbind_batch(self) -> List["StreamState"]:
         """Split a StreamState object into a list of StreamState objects along the batch dimension.
 
@@ -241,9 +241,9 @@ def stream_state(
     )
 
 
-
 # TODO (JDH): I think this should not inherit from torch.Tensor, but instead have a torch.Tensor as an attribute.
 #             The problem is that calls to torch.cat, torch.stack, etc. become recursive.
+
 
 class StreamTensor(torch.Tensor):
     @staticmethod
@@ -253,7 +253,7 @@ class StreamTensor(torch.Tensor):
         return super().__new__(cls, data, *args, **kwargs)  # call torch.Tensor.__new__
 
     def __init__(self, data, stream_state: StreamState, *args, names: List[str] = None, **kwargs):
-        """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""   
+        """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
         # TODO (JDH): Check that either BATCH or LENGTH are in either data.names or names and raise error if not.
         # print(f"StreamTensor.__init__ called with data: {data}, stream_state: {stream_state}")
         super().__init__()
@@ -279,7 +279,7 @@ class StreamTensor(torch.Tensor):
         is_handled = func in STREAM_TENSOR_FUNCTIONS and all(issubclass(t, (torch.Tensor, StreamTensor)) for t in types)
         print(f"\n\n{func.__name__}: {is_handled}\n\n")
         if is_handled:
-            #print("\n\n", cls, func, types, args, kwargs, "\n\n")
+            # print("\n\n", cls, func, types, args, kwargs, "\n\n")
             return STREAM_TENSOR_FUNCTIONS[func](*args, **kwargs)
 
         out = super().__torch_function__(func, types, args, kwargs)
@@ -306,11 +306,11 @@ class StreamTensor(torch.Tensor):
     def is_length_dim(self, dim: int) -> bool:
         # TODO: Refine to include multiple length dims
         return self.names[dim] == LENGTH
-    
+
     def max_length(self):
         # TODO: Refine to include multiple length dims
         return self.size(self.names.index(LENGTH))
-    
+
     def batch_size(self):
         return self.size(self.names.index(BATCH))
 
@@ -328,58 +328,39 @@ class StreamTensor(torch.Tensor):
         if batch_dim < length_dim:
             length_dim -= 1
         return [x.narrow(length_dim, 0, x.stream_state.lengths.item()) for x in self.unbind(dim=batch_dim)]
-    
+
     def iter_chunks(self):
         """Return an iterator over chunks of the tensor."""
         # TODO (LB): Implement this.
         raise NotImplementedError()
-    
+
     def to_chunks(self):
         """Return a list of chunks of the tensor."""
         # TODO (LB): Implement this. Should return a ChunkedList object.
         raise NotImplementedError()
 
 
-def as_stream_tensor(data, state: List[StreamState], names: Tuple[Union[None, int]], dtype: torch.dtype = None, device: torch.device = None) -> StreamTensor:
+def as_stream_tensor(
+    data, state: StreamState, names: Tuple[Union[None, int]], dtype: torch.dtype = None, device: torch.device = None
+) -> StreamTensor:
     data = torch.as_tensor(data, dtype=dtype, device=device)
-    if names is not None:
-        data = data.refine_names(*names)  # Make the tensor named if it isn't already.
-
-    s = StreamTensor(data=data, stream_state=state)
-    return s
-
-
-def stream_tensor(data, state: List[StreamState], names: Tuple[Union[None, int]], dtype: torch.dtype = None, device: torch.device = None, requires_grad: bool = False, pin_memory: bool = False) -> StreamTensor:
-    data = torch.tensor(data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory)
+    data = data.refine_names(*names)  # Make the tensor named if it isn't already.
     return StreamTensor(data=data, stream_state=state)
 
 
-if __name__ == "__main__":
-    x = torch.randn(32, 128, 56).tolist()
-    ids = [uuid.uuid4().hex for _ in range(32)]
-    names = [BATCH, LENGTH, "F"]
-    is_first = torch.tensor([True, True, True] + [False] * 29)
-    is_last = torch.tensor([False] * 29 + [True, True, True])
-    lengths = torch.randint(20, 56, (32,))
+def stream_tensor(
+    data,
+    state: StreamState,
+    names: Tuple[Union[None, int]],
+    dtype: torch.dtype = None,
+    device: torch.device = None,
+    requires_grad: bool = False,
+    pin_memory: bool = False,
+) -> StreamTensor:
+    if isinstance(data, torch.Tensor) and data.names != names:
+        data = data.rename(*names)
 
-    state = stream_state(ids=ids, is_first=is_first, is_last=is_last, lengths=lengths)
-    s = stream_tensor(
-        x,
-        state,
-        device="cpu",
-        requires_grad=False,
-        pin_memory=False,
-        names=names,
+    data = torch.tensor(
+        data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory
     )
-    
-    # c1 = torch.cat([s, s], dim=0)
-    
-    # a = torch.randn(32, 128, 56)
-    
-    p1 = torch.permute(s, (2, 0, 1)) # WORKS
-    # c2 = torch.cat([s, a], dim=0)
-
-    # from random import randint
-    # tensors = [torch.rand(256, randint(50, 100)) for _ in range(4)]
-    # ids = [uuid.uuid4().hex for _ in range(4)]
-    # l = LongformList(tensors=tensors, ids=ids, chunk_size=20, names=("F", LENGTH))
+    return StreamTensor(data=data, stream_state=state)

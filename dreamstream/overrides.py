@@ -1,14 +1,11 @@
 import functools
 from typing import List, Union
 
-from dreamstream.tensor import StreamTensor, StreamState
+from dreamstream.tensor import StreamTensor, StreamState, STREAM_TENSOR_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
 
 import torch
 from torch import Tensor
-
-
-STREAM_TENSOR_FUNCTIONS = dict()
 
 
 def all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]]) -> bool:
