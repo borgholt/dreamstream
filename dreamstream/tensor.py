@@ -1,15 +1,16 @@
 import uuid
-import math
 import itertools
-import functools
+
 from copy import deepcopy
 from typing import Callable, List, Tuple, Sequence, Optional, Union
 
 import torch
 import numpy as np
+
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
+from dreamstream.overrides import STREAM_TENSOR_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
@@ -240,8 +241,6 @@ def stream_state(
     )
 
 
-STREAM_TENSOR_FUNCTIONS = dict()
-
 
 # TODO (JDH): I think this should not inherit from torch.Tensor, but instead have a torch.Tensor as an attribute.
 #             The problem is that calls to torch.cat, torch.stack, etc. become recursive.
@@ -315,14 +314,12 @@ class StreamTensor(torch.Tensor):
     def batch_size(self):
         return self.size(self.names.index(BATCH))
 
-    def tensor(self) -> torch.Tensor:
+    def tensor(self, keep_names: bool = False) -> torch.Tensor:
         """Return the underlying torch.Tensor."""
-        # TODO (JDH): Verify that this is OK.
-        # import IPython
-        # IPython.embed(using=False)
-        # tensor.__class__ = torch.Tensor
-        # tensor.__torch_function__ = torch.Tensor.__torch_function__
-        return torch.Tensor(self)
+        tensor = torch.Tensor(self)
+        if not keep_names:
+            tensor.rename(None)
+        return tensor
 
     def unpad_sequence(self) -> torch.Tensor:
         """Remove padding along the specified dimension."""
@@ -343,155 +340,19 @@ class StreamTensor(torch.Tensor):
         raise NotImplementedError()
 
 
-def stream_tensor(
-    data,
-    state: List[StreamState] = None,
-    names: List[str] = None,
-    ids: Union[str, List[str]] = None,
-    is_first: Union[bool, List[bool], torch.BoolTensor] = None,
-    is_last: Union[bool, List[bool], torch.BoolTensor] = None,
-    lengths: Union[int, List[int], torch.IntTensor] = None,
-    dtype: torch.dtype = None,
-    device: torch.device = None,
-    requires_grad: bool = False,
-    pin_memory: bool = False
-) -> StreamTensor:
-    """Create a StreamTensor object from the given arguments.
-
-    This method will convert data to a `torch.Tensor` if it is not already a `torch.Tensor`. It will use 
-    `torch.as_tensor` for this to avoid unnecessary copying, unless kwargs contains "requires_grad" or "pin_memory", 
-    in which case we are forced to make a copy by using `torch.tensor`.
-
-    Args:
-        data (torch.Tensor): The input tensor.
-        ids (Union[str, List[str]]): The ids of the input tensors.
-        is_first (bool): Whether the input tensors are the first in a batch.
-        is_last (bool): Whether the input tensors are the last in a batch.
-        lengths (Union[int, List[int]]): The lengths of the input tensors.
-        chunk_index (int): The index of the chunk in the batch.
-        num_chunks (Optional[int], optional): The number of chunks in the batch. Defaults to None.
-
-    Returns:
-        StreamTensor: The constructed StreamTensor object.
-    """
-    
-    # Check that we can create a named tensor.
-    if names is None:
-        if not isinstance(data, torch.Tensor) or (LENGTH not in data.names):
-            raise ValueError("Must provide `names` either via tensor data or names argument.")
-    else:
-        if (LENGTH not in names):
-            raise ValueError("Must provide `names` either via tensor data or names argument.")
-
-    # Check if we need to copy the data.
-    requires_copy = False
-    if requires_grad or pin_memory:
-        # If requires_grad or pin_memory is True, we may need to make a copy of the data, but only if data is not
-        # already a tensor with the requested requires_grad or pin_memory attributes.
-        data_requires_grad = data.requires_grad if isinstance(data, torch.Tensor) else False
-        data_pin_memory = data.is_pinned() if isinstance(data, torch.Tensor) else False
-        requires_copy = (requires_grad and not data_requires_grad) or (pin_memory and not data_pin_memory)
-
-    # TODO: Shouldn't we just have both a stream_tensor and as_stream_tensor function instead of this?
-    if requires_copy:
-        # If requires_copy is True, we need to make a copy of the data, so we use torch.tensor.
-        data = torch.tensor(data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory)
-    else:
-        # If data is already a tensor with the requested dtype and device then data itself is returned, but if data is 
-        # a tensor with a different dtype or device then it’s copied as if using data.to(dtype=dtype, device=device).
-        data = torch.as_tensor(data, dtype=dtype, device=device)
-        if names is not None:
-            data = data.refine_names(*names)  # Make the tensor named if it isn't already.
-
-    assert BATCH in data.names and LENGTH in data.names, "data must have batch and length dimensions, 'B' and 'L'."
-
-    if state is None:
-        state = stream_state(ids, is_first, is_last, lengths)
+def as_stream_tensor(data, state: List[StreamState], names: Tuple[Union[None, int]], dtype: torch.dtype = None, device: torch.device = None) -> StreamTensor:
+    data = torch.as_tensor(data, dtype=dtype, device=device)
+    if names is not None:
+        data = data.refine_names(*names)  # Make the tensor named if it isn't already.
 
     s = StreamTensor(data=data, stream_state=state)
     return s
 
-def as_stream_tensor():
-    raise NotImplementedError()
 
-def all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]]) -> bool:
-    """Return True if all tensors are StreamTensors."""
-    return all(isinstance(t, StreamTensor) for t in tensors)
+def stream_tensor(data, state: List[StreamState], names: Tuple[Union[None, int]], dtype: torch.dtype = None, device: torch.device = None, requires_grad: bool = False, pin_memory: bool = False) -> StreamTensor:
+    data = torch.tensor(data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory)
+    return StreamTensor(data=data, stream_state=state)
 
-
-def require_all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]], message: str = None):
-    """Raise an error if any of the tensors are not StreamTensors."""
-    if not all_stream_tensors(tensors):
-        message = message or "All tensors must be StreamTensors."
-        raise ValueError(message)
-
-
-def implements(torch_function):
-    """Register a torch function override for StreamTensor."""
-
-    def decorator(func):
-        functools.update_wrapper(func, torch_function)
-        STREAM_TENSOR_FUNCTIONS[torch_function] = func
-        return func
-
-    return decorator
-
-
-
-        
-
-
-# @implements(torch.stack)
-# def stack(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
-#     """Create a new dim and name it """
-
-
-# @implements(torch.vstack)
-# @implements(torch.hstack)
-
-# @implements(torch.split)
-# @implements(torch.chunk)
-
-# @implements(torch.flatten)
-
-# @implements(torch.squeeze)  # Never remove batch or length dims
-# @implements(torch.unsqueeze)  # Give new dim default name
-
-# @implements(torch.nn.utils.rnn.pad_sequence)
-# @implements(torch.nn.utils.rnn.unpad_sequence)
-
-# reduction methods
-# @implements(torch.sum)  # Fail if batch or length dim was removed? Maybe not.
-# @implements(torch.mean)
-# @implements(torch.std)
-# @implements(torch.var)
-# @implements(torch.median)
-# @implements(torch.topk)
-
-# indexing, slicing, joining, mutating methods
-# @implements(torch.index)
-# @implements(torch.gather)
-# @implements(torch.scatter)
-# @implements(torch.gather_index)
-
-# moving dimensions
-# @implements(torch.transpose)
-# @implements(torch.permute)
-
-
-    
-
-    
-    
-    
-    
-
-
-        
-        
-        
-        
-    
 
 if __name__ == "__main__":
     x = torch.randn(32, 128, 56).tolist()
@@ -501,13 +362,10 @@ if __name__ == "__main__":
     is_last = torch.tensor([False] * 29 + [True, True, True])
     lengths = torch.randint(20, 56, (32,))
 
+    state = stream_state(ids=ids, is_first=is_first, is_last=is_last, lengths=lengths)
     s = stream_tensor(
         x,
-        ids=ids,
-        is_first=is_first,
-        is_last=is_last,
-        lengths=lengths,
-        dtype=torch.float32,
+        state,
         device="cpu",
         requires_grad=False,
         pin_memory=False,
