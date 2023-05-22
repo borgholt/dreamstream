@@ -259,14 +259,6 @@ class StreamTensor(torch.Tensor):
         super().__init__()
         self._stream_state = stream_state
 
-    def set_empty(self):
-        self.stream_state.set_empty()
-        self.data = None
-
-    @property
-    def is_empty(self):
-        return self.size(LENGTH) == 0
-
     @classmethod
     def __torch_function__(cls, func: Callable, types: List[torch.Tensor], args=(), kwargs=None):
         # print("StreamTensor.__torch_function__ called with func:", func)
@@ -291,6 +283,14 @@ class StreamTensor(torch.Tensor):
             out = StreamTensor(out, stream_state=stream_states[0])
 
         return out
+
+    def set_empty(self):
+        self.stream_state.set_empty()
+        self.data = None
+
+    @property
+    def is_empty(self):
+        return self.size(LENGTH) == 0
 
     @property
     def stream_state(self) -> StreamState:
