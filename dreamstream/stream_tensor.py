@@ -151,7 +151,9 @@ class StreamTensor(torch.Tensor):
     @classmethod
     def __torch_function__(cls, func: Callable, types: List[torch.Tensor], args=(), kwargs=None):
         # print("StreamTensor.__torch_function__ called with func:", func)
-        # TODO (JDH): If func is cat, stack, vstack or hstack along batch dim, apply this also to stream_states.
+
+        # TODO (JDH): Deal with empty StreamTensors.
+
         if kwargs is None:
             kwargs = dict()
 
@@ -160,7 +162,8 @@ class StreamTensor(torch.Tensor):
             return STREAM_TENSOR_FUNCTIONS[func](*args, **kwargs)
 
         out = super().__torch_function__(func, types, args, kwargs)
-
+        # TODO (JDH): Maybe check if batch and time dim are preserved, and if not, raise error.
+        #             This would happen if we used the `stream_tensor` method instead of `StreamTensor` class.
         if isinstance(out, torch.Tensor):
             # TODO: If more than one, assert that stream_states are identical, or raise error
             stream_states = [x.stream_state for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]
@@ -337,9 +340,12 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
 # @implements(torch.nn.utils.rnn.unpad_sequence)
 
 # reduction methods
-# @implements(torch.sum)  # Never remove batch or length dims
+# @implements(torch.sum)  # Fail if batch or length dim was removed? Maybe not.
 # @implements(torch.mean)
 # @implements(torch.std)
+# @implements(torch.var)
+# @implements(torch.median)
+# @implements(torch.topk)
 
 # indexing, slicing, joining, mutating methods
 # @implements(torch.index)
@@ -347,7 +353,7 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
 # @implements(torch.scatter)
 # @implements(torch.gather_index)
 
-
+# moving dimensions
 # @implements(torch.transpose)
 # @implements(torch.permute)
     
