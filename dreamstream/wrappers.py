@@ -29,23 +29,22 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
         for t in tensors:
             if t.stream_state.lengths.min() < t.max_length():
                 raise NotImplementedError("Concatenating along the length dimension is only supported for non-padded tensors.")
-            stream_state = sum([t.stream_state for t in tensors])
-            tensors = [t.tensor() for t in tensors]
-            tensor = torch.cat(tensors, dim=dim, out=out)
-            return StreamTensor(tensor, stream_state)
         
-        raise NotImplementedError("Concatenating along the length dimension is not yet supported.")
-    
+        stream_state = sum([t.stream_state for t in tensors])
+        tensors = [t.tensor() for t in tensors]
+        tensor = torch.cat(tensors, dim=dim, out=out)
+        return StreamTensor(tensor, stream_state)
+            
     return torch.cat(tensors, dim=dim, out=out)
 
 
 @implements(torch.permute)
-def permute(tensor: StreamTensor, dims: Union[List[int], List[str]]):
+def permute(tensor: StreamTensor, dims: List[int]):
     dims = [tensor.names[dim] for dim in dims]
     return tensor.align_to(*dims)
 
 @implements(torch.Tensor.permute)
-def tensor_permute(tensor: StreamTensor, *dims: Union[int, str]):
+def tensor_permute(tensor: StreamTensor, *dims: int):
     return permute(tensor, dims)
 
 # Seemingly non-overriadable functions. Used in torch.Tensor.split:
@@ -70,15 +69,11 @@ def tensor_permute(tensor: StreamTensor, *dims: Union[int, str]):
 @implements(torch.split)
 def split(tensor: StreamTensor, split_size_or_sections: Union[int, List[int]], dim: int = 0):
     
-    if tensor.names[dim] == LENGTH:
-        # TODO: Implement this along with "split_length" for the StreamState.
-        raise ValueError("Splitting along the length dimension is not currently supported.")
-
     state = tensor.stream_state
     tensor = tensor.tensor()
     
-    if tensor.names[dim] == BATCH:
-        states = state.split_batch(split_size_or_sections)
+    if tensor.names[dim] in (LENGTH, BATCH):
+        states = state.split(split_size_or_sections, tensor.names[dim])
         tensors = tensor.split(split_size_or_sections, dim=dim)
         assert len(tensors) == len(states)
         tensors = [StreamTensor(t, s) for t, s in zip(tensors, states)]
@@ -110,4 +105,30 @@ def unbind(tensor: StreamTensor, dim=0):
     
     return tensors
 
+@implements(torch.chunk)
+def chunk(tensor: StreamTensor, chunks: int, dim=0):
+    
+    raise NotImplementedError("Chunking is not yet supported.")
+
 # TODO: Implement support for narrow - used in unpad_sequence:
+
+@implements(torch.nn.functional.pad)
+def pad(input: StreamTensor, pad: List[int], mode: str = 'constant', value: float = None):
+    state = input.stream_state
+    names = input.names
+    input = input.tensor().rename(None)
+    # TODO: Adapt stream_state
+    output = torch.nn.functional.pad(input, pad, mode=mode, value=value)
+    output = output.rename(*names)
+    return StreamTensor(output, state)
+
+
+@implements(torch.conv1d)
+def conv1d(input: StreamTensor, *args, **kwargs):
+    state = input.stream_state
+    names = input.names
+    # TODO: Adapt stream_state
+    input = input.tensor().rename(None)
+    output = torch.conv1d(input, *args, **kwargs)
+    output = output.rename(*names)
+    return StreamTensor(output, state)

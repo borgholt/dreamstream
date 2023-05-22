@@ -85,42 +85,48 @@ class AudioSample:
 #         self.lengths = lengths
 #         self.num_chunks = num_chunks
 
-class Chunks(list):
+class ChunkedList(list):
     
-    def __init__(
-        self,
-        chunks: List[StreamTensor],
-        lengths: torch.Tensor,
-        iterator_device: torch.device = None
-    ):
-        # TODO: Ensure that all tensors have same names and ids (or a subset of the previous chunk).
-        self.ids = chunks[0].ids
-        self.names = chunks[0].names
-        self.lengths = lengths
+    def __init__(self, chunks: List[StreamTensor], stream_state: StreamState):
+        self += chunks
+        self.stream_state = stream_state
     
     @property
     def num_chunks(self):
         return len(self)    
         
 class OutputCollector(dict):
+    
+    def __init__(self, *stream_tensor: StreamTensor):
+        super().__init__()
+        self.closed_entries = set()
+        self.update(*stream_tensor)
         
     def update(self, *stream_tensor: StreamTensor):
         
         for t in stream_tensor:
-            length_dim = t.names.index(LENGTH)
             if BATCH in t.names:
                 batch_dim = t.names.index(BATCH)
                 for x in t.unpad_sequence():
-                  self._update_unary(x, dim=length_dim)  
+                    self._update_unary(x)  
             else:
                 assert stream_tensor.stream_state.size() == 1, "The tensor has no batch dimension, but state has multiple elements."
-                self._update_unary(t, dim=length_dim)
+                self._update_unary(t)
                 
     def _update_unary(self, stream_tensor: StreamTensor, dim: int):
         
-        _id = stream_tensor.stream_state.id[0]
+        _id = stream_tensor.stream_state.ids[0]
+        
+        if _id in self.closed_entries:
+            raise ValueError(f"The entry for {_id} has already been closed.")
+        if stream_tensor.stream_state.is_last.item():
+            self.closed_entries.add(_id)
+        
         if _id in self:
-            self[_id] = torch.cat([self[_id], stream_tensor], dim=dim)
+            assert not stream_tensor.stream_state.is_first.item(), "The tensor is the first chunk."
+            length_dim = stream_tensor.names.index(LENGTH)
+            self[_id] = torch.cat([self[_id], stream_tensor], dim=length_dim)
         else:
+            assert stream_tensor.stream_state.is_first.item(), "The tensor is not the first chunk."
             self[_id] = stream_tensor
                 
