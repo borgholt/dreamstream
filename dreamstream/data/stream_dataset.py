@@ -16,8 +16,8 @@ import torchaudio
 
 from torch.utils.data import IterableDataset, DataLoader
 
-from dreamstream.data_objects import AudioSample
-from dreamstream.stream_tensor import BATCH, LENGTH, StreamTensor, StreamState, stream_tensor
+from dreamstream.data.data_objects import AudioSample
+from dreamstream.tensor import BATCH, LENGTH, StreamTensor, StreamState, stream_tensor
 
 
 LOGGER = logging.getLogger(__file__)
