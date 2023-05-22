@@ -146,7 +146,6 @@ class StreamState:
         Args:
             split_size_or_sections (Union[int, List[int]]): Size of a single chunk or list of sizes for each chunk.
         
-        
         Returns:
             List[StreamState]: The split StreamState objects.
         """
@@ -164,9 +163,46 @@ class StreamState:
         split_last = self.is_last.split(split_size_or_sections)
         split_lengths = self.lengths.split(split_size_or_sections)
         args_iter = zip(split_ids, split_first, split_last, split_lengths)
-        split_states = [stream_state(*args) for args in args_iter]
 
-        return split_states
+        return [stream_state(*args) for args in args_iter]
+    
+    def split_length(self, split_size_or_sections: Union[int, List[int]]) -> List["StreamState"]:
+        """Split a StreamState object into a list of StreamState objects along the length dimension.
+
+        Args:
+            split_size_or_sections (Union[int, List[int]]): Size of a single chunk or list of sizes for each chunk.
+        
+        Returns:
+            List[StreamState]: The split StreamState objects.
+        """
+        max_length = self.lengths.max().item()
+        if isinstance(split_size_or_sections, list) and sum(split_size_or_sections) < max_length:
+            raise ValueError("Sum of split sizes must be equal to (or larger than) the maximum length.")
+        
+        if isinstance(split_size_or_sections, int):
+            start = np.arange(0, max_length, split_size_or_sections)
+            end = (start + split_size_or_sections).clip(max=max_length)
+        else:
+            end = np.cumsum(split_size_or_sections)
+            start = np.concatenate(([0], end[:-1]))
+        
+        # TODO: Something like this should be the standard for slicing the StreamState object
+        def substate(i, j):
+            lengths = (self.lengths - i).clip(min=0, max=j-i)
+            is_first = self.is_first.clone() if (j > 0) and (i == 0) else torch.zeros_like(self.is_first)
+            is_last = (i < self.lengths) & (self.lengths <= j)
+            ids = deepcopy(self.ids)
+            return stream_state(ids, is_first, is_last, lengths)
+               
+        return [substate(i, j) for i, j in zip(start, end)]
+    
+    def split(self, split_size_or_sections: Union[int, List[int]], dim: str) -> List["StreamState"]:
+        if dim not in (LENGTH, BATCH):
+            raise ValueError(f"Invalid dimension: {dim}")
+        if dim == LENGTH:
+            return self.split_length(split_size_or_sections)
+        else:
+            return self.split_batch(split_size_or_sections)
     
     def unbind_batch(self) -> List["StreamState"]:
         """Split a StreamState object into a list of StreamState objects along the batch dimension.
@@ -242,7 +278,7 @@ class StreamTensor(torch.Tensor):
         is_handled = func in STREAM_TENSOR_FUNCTIONS and all(issubclass(t, (torch.Tensor, StreamTensor)) for t in types)
         print(f"\n\n{func.__name__}: {is_handled}\n\n")
         if is_handled:
-            print("\n\n", cls, func, types, args, kwargs, "\n\n")
+            #print("\n\n", cls, func, types, args, kwargs, "\n\n")
             return STREAM_TENSOR_FUNCTIONS[func](*args, **kwargs)
 
         out = super().__torch_function__(func, types, args, kwargs)
@@ -266,9 +302,11 @@ class StreamTensor(torch.Tensor):
         return self.names[dim] == BATCH
 
     def is_length_dim(self, dim: int) -> bool:
+        # TODO: Refine to include multiple length dims
         return self.names[dim] == LENGTH
     
     def max_length(self):
+        # TODO: Refine to include multiple length dims
         return self.size(self.names.index(LENGTH))
     
     def batch_size(self):
@@ -281,13 +319,14 @@ class StreamTensor(torch.Tensor):
         # IPython.embed(using=False)
         # tensor.__class__ = torch.Tensor
         # tensor.__torch_function__ = torch.Tensor.__torch_function__
-        tensor = torch.Tensor(self)
-        return tensor
+        return torch.Tensor(self)
 
     def unpad_sequence(self) -> torch.Tensor:
         """Remove padding along the specified dimension."""
-        length_dim = self.names.index(LENGTH)
         batch_dim = self.names.index(BATCH)
+        length_dim = self.names.index(LENGTH)
+        if batch_dim < length_dim:
+            length_dim -= 1
         return [x.narrow(length_dim, 0, x.stream_state.lengths.item()) for x in self.unbind(dim=batch_dim)]
     
     def iter_chunks(self):

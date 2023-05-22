@@ -26,7 +26,6 @@ def conv_1d_streaming_forward(self, input):
     # TODO: Check that input is greater than kernel size, otherwise PyTorch will throw an error. Maybe this should be done after padding and adding states.
     
     stream_state = input.stream_state # DELETE when "StreamTensor" functions are implemented.
-    input = torch.Tensor(input) # DELETE when "StreamTensor" functions are implemented.
     
     # If all inputs are NOT first, collect states for all.
     if (k > 1) and (not stream_state._all_first):
