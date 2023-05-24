@@ -106,14 +106,14 @@ class OutputCollector(dict):
         
         for t in stream_tensor:
             if BATCH in t.names:
-                batch_dim = t.names.index(BATCH)
                 for x in t.unpad_sequence():
-                    self._update_unary(x)  
+                    if x.stream_state.max_length > 0:
+                        self._update_unary(x)  
             else:
                 assert stream_tensor.stream_state.size() == 1, "The tensor has no batch dimension, but state has multiple elements."
                 self._update_unary(t)
                 
-    def _update_unary(self, stream_tensor: StreamTensor, dim: int):
+    def _update_unary(self, stream_tensor: StreamTensor):
         
         _id = stream_tensor.stream_state.ids[0]
         

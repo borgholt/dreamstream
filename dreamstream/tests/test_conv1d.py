@@ -31,5 +31,15 @@ chunks = random_chunks(batch.size("L"))
 stream_output = OutputCollector()
 conv.online()
 for x in batch.split(chunks, dim=2):
+    names = x.names
+    x.rename_(None)
+    x = x[x.stream_state.lengths > 0]
+    x.rename_(*names)
+    x.stream_state.drop_empty()
+    assert x.size(0) == len(x.stream_state)
     y = conv(x)
     stream_output.update(y)
+    
+for _id, _y in targets.items():
+    y = stream_output[_id].tensor()
+    print(torch.allclose(_y, y), (_y - y).abs().max().item())

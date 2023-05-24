@@ -59,20 +59,21 @@ class StreamState:
             raise ValueError("is_first, is_last and lengths must be 1-dimensional.")
 
         self.ids = ids
-        self.is_first = is_first
-        self.is_last = is_last
-        self.lengths = lengths
+        self._is_first = is_first
+        self._is_last = is_last
+        self._lengths = lengths
         
-        self._lengths_mutated = True
+        self._lengths_updated = True
         self._max_lengths = None
-
-        self._any_first = self.is_first.any().item()
-        self._any_last = self.is_last.any().item()
-
-        self._all_first = self.is_first.all().item()
-        self._all_last = self.is_last.all().item()
-
-        self._any_first_or_last = self._any_first or self._any_last
+        
+        self._any_first = None
+        self._any_last = None
+        self._all_first = None
+        self._all_last = None
+        self._any_first_or_last = None
+        self._all_first_and_last = None
+        self._first_last_updated = True
+        self._self_update_logical()
         
     def __getitem__(self, indices: Union[int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]):
         """Index the state along the batch and/or length dimensions."""
@@ -179,34 +180,85 @@ class StreamState:
 
     def __len__(self):
         return len(self.ids)
-
-    def __add__(self, other):  # TODO (JDH): Rename to cat_lengths
-        if self.ids != other.ids:
-            raise ValueError("Cannot add StreamStates with different ids.")
-
-        lengths = self.lengths + other.lengths
-        is_first = self.is_first | other.is_first
-        is_last = self.is_last | other.is_last
-
-        return StreamState(
-            ids=deepcopy(self.ids),
-            is_first=is_first,
-            is_last=is_last,
-            lengths=lengths,
+    
+    def _self_update_logical(self):
+        if self._first_last_updated:
+            self._any_first = self.is_first.any().item()
+            self._any_last = self.is_last.any().item()
+            self._all_first = self.is_first.all().item()
+            self._all_last = self.is_last.all().item()
+            self._any_first_or_last = self._any_first or self._any_last
+            self._all_first_and_last = self._all_first and self._all_last
+            self._first_last_updated = False
+    
+    @property
+    def any_first(self):
+        self._self_update_logical()
+        return self._any_first
+    
+    @property
+    def any_last(self):
+        self._self_update_logical()
+        return self._any_last
+    
+    @property
+    def all_first(self):
+        self._self_update_logical()
+        return self._all_first
+    
+    @property
+    def all_last(self):
+        self._self_update_logical()
+        return self._all_last
+    
+    @property
+    def any_first_or_last(self):
+        self._self_update_logical()
+        return self._any_first_or_last
+    
+    @property
+    def all_first_and_last(self):
+        self._self_update_logical()
+        return self._all_first_and_last
+    
+    @property
+    def is_first(self):
+        return self._is_first
+    
+    @property
+    def is_last(self):
+        return self._is_last
+    
+    @is_first.setter
+    def is_first(self, value):
+        self._is_first = value
+        assert self._is_first.dtype == torch.bool
+        self._first_last_updated = True
+        
+    @is_last.setter
+    def is_last(self, value):
+        self._is_last = value
+        assert self._is_first.dtype == torch.bool
+        self._first_last_updated = True
+        
+    def __eq__(self, other):        
+        return (
+            self.ids == other.ids
+            and self.is_first.equal(other.is_first)
+            and self.is_last.equal(other.is_last)
+            and self.lengths.equal(other.lengths)
         )
-
-    def __radd__(self, other):
-        if other == 0:
-            return self
-        else:
-            return self.__add__(other)
+    
+    @property
+    def lengths(self):
+        return self._lengths
 
     @property
     def max_length(self):
         """Return the maximum length of the batch and recompute only if lengths have been mutated."""
-        if self._lengths_mutated:
+        if self._lengths_updated:
             self._max_length = self.lengths.max().item()
-            self._lengths_mutated = False
+            self._lengths_updated = False
         return self._max_length
 
     @property
@@ -217,13 +269,24 @@ class StreamState:
     def _last_lengths(self):
         return self.lengths[self.is_last]
 
+    @lengths.setter
+    def lengths(self, i):
+        self._lengths = i
+        self._lengths_updated = True
+        
+    @max_length.setter
+    def max_length(self, i):
+        raise AttributeError("max_length is read-only.")
+    
     @_first_lengths.setter
     def _first_lengths(self, i):
-        self.lengths[self.is_first] = i
-
+        self._lengths[self.is_first] = i
+        self._lengths_updated = True
+    
     @_last_lengths.setter
     def _last_lengths(self, i):
-        self.lengths[self.is_last] = i
+        self._lengths[self.is_last] = i
+        self._lengths_updated = True
 
     def size(self):
         return len(self)
@@ -241,7 +304,7 @@ class StreamState:
         return f"StreamState(size={self.size()})"
 
     @classmethod
-    def cat(cls, stream_states: List["StreamState"]) -> "StreamState":
+    def cat_batch(cls, stream_states: List["StreamState"]) -> "StreamState":
         """Concatenate a list of StreamState objects along the batch dimension.
 
         Args:
@@ -250,13 +313,56 @@ class StreamState:
         Returns:
             StreamState: The concatenated StreamState object.
         """
+        
+        if len(stream_states) == 1:
+            return deepcopy(stream_states[0])
+        
         assert all(isinstance(s, StreamState) for s in stream_states)
         ids = list(itertools.chain.from_iterable([s.ids for s in stream_states]))
         is_first = torch.cat([s.is_first for s in stream_states], dim=0)
         is_last = torch.cat([s.is_last for s in stream_states], dim=0)
         lengths = torch.cat([s.lengths for s in stream_states], dim=0)
         return cls(ids, is_first, is_last, lengths)
+    
+    @classmethod
+    def cat_length(cls, stream_states: List["StreamState"]) -> "StreamState":
+        """Concatenate a list of StreamState objects along the length dimension.
 
+        Args:
+            stream_states (List[StreamState]): The StreamState objects to concatenate.
+
+        Returns:
+            StreamState: The concatenated StreamState object.
+        """
+        
+        if len(stream_states) == 1:
+            return deepcopy(stream_states[0])
+        
+        j = len(stream_states) - 1
+        for i, s in enumerate(stream_states):
+            if i != 0 and s.ids != stream_states[0].ids:
+                raise ValueError("Cannot concatenate StreamStates with different ids.")
+            if i != 0 and s.any_first:
+                raise ValueError('StreamStates where any "is_first" is True should be first when concatenated.')
+            if i != j and s.any_last:
+                raise ValueError('StreamStates where any "is_last" is True should be last when concatenated.')
+        
+        ids = deepcopy(stream_states[0].ids)
+        is_first = stream_states[0].is_first.clone()
+        is_last = stream_states[-1].is_last.clone()
+        lengths = sum([s.lengths for s in stream_states])
+        return cls(ids, is_first, is_last, lengths)
+    
+    @classmethod
+    def cat(cls, stream_states: List["StreamState"], dim: str) -> "StreamState":
+        """Concatenate a list of StreamState objects along a given dimension."""   
+        if dim == LENGTH:
+            return cls.cat_length(stream_states)
+        elif dim == BATCH:
+            return cls.cat_batch(stream_states)
+        else:
+            raise ValueError(f"Invalid dimension: {dim}")
+    
     def split_batch(self, split_size_or_sections: Union[int, List[int]]) -> List["StreamState"]:
         """Split a StreamState object into a list of StreamState objects along the batch dimension.
 
@@ -314,12 +420,12 @@ class StreamState:
         return [substate(i, j) for i, j in zip(start, end)]
 
     def split(self, split_size_or_sections: Union[int, List[int]], dim: str) -> List["StreamState"]:
-        if dim not in (LENGTH, BATCH):
-            raise ValueError(f"Invalid dimension: {dim}")
+        """Split a StreamState object into a list of StreamState objects along a given dimension."""
         if dim == LENGTH:
             return self.split_length(split_size_or_sections)
-        else:
+        elif dim == BATCH:
             return self.split_batch(split_size_or_sections)
+        raise ValueError(f"Invalid dimension: {dim}")
 
     def unbind_batch(self) -> List["StreamState"]:
         """Split a StreamState object into a list of StreamState objects along the batch dimension.
@@ -448,9 +554,13 @@ class StreamTensor(torch.Tensor):
         """Return the underlying torch.Tensor."""
         tensor = torch.Tensor(self)
         if not keep_names:
-            tensor.rename(None)
+            tensor.rename_(None)
         return tensor
 
+    def named_tensor(self) -> torch.Tensor:
+        """Return the underlying torch.Tensor with names."""
+        return self.tensor(keep_names=True)
+    
     def unpad_sequence(self) -> torch.Tensor:
         """Remove padding along the specified dimension."""
         batch_dim = self.names.index(BATCH)

@@ -7,101 +7,72 @@ import torch.nn.functional as F
 
 from dreamstream.tensor import StreamTensor, StreamState
 from dreamstream.patches.general import online, offline
+from dreamstream.nn.utils import pad_stream_tensor
 
-def conv_1d_streaming_forward(self, input):
+
+def conv_1d_pre_hook(self, inputs):
     
     if not self.streaming:
-        return self.original_forward(input)
+        assert not isinstance(inputs[0], StreamTensor), "Using StreamTensors in offline mode might result in unexpected behavior."
+        return inputs
     
-    assert isinstance(input, StreamTensor), "input is expected to be StreamTensor when in streaming mode"
+    input = inputs[0]
     
-    # TODO: Check if input is None (or another object that indicates that computation can be skipped)
-    
-    # Create shortform variables for padding (p), kernel size (k), and stride (s).
-    p = self.original_padding[0] if isinstance(self.original_padding, tuple) else 0
-    k = self.kernel_size[0]
-    k += (k - 1) * (self.dilation[0] - 1)
-    s = self.stride[0]
-    
-    # TODO: Check that input is greater than kernel size, otherwise PyTorch will throw an error. Maybe this should be done after padding and adding states.
-    
-    stream_state = input.stream_state # DELETE when "StreamTensor" functions are implemented.
-    
+    assert isinstance(input, StreamTensor), "The input is expected to be StreamTensor when in online mode."
+        
     # If all inputs are NOT first, collect states for all.
-    if (k > 1) and (not stream_state._all_first):
-        state_data = [self.input_states[_id] if _id in self.input_states else None for _id in stream_state.ids]
-        state_lengths = torch.as_tensor([0 if x is None else x.size(-1) for x in state_data])
-        assert state_lengths.min() >= 0, "some state lengths should be greater than zero"
-        ref_length = state_lengths[0]
+    if (self.kernel_width > 1) and (not input.stream_state.all_first):
+        buffer_data = [self.stream_buffer[_id] if _id in self.stream_buffer else None for _id in input.stream_state.ids]
+        buffer_lengths = torch.as_tensor([0 if x is None else x.size(-1) for x in buffer_data])
+        assert buffer_lengths.min() >= 0, "At least one buffer should have length greater than zero."
+        ref_length = buffer_lengths[0]
+        
         # If all have the same length, stack them and concatenate with input.
-        if (state_lengths == ref_length).all():
-            state_data = torch.stack(state_data)
-            input = torch.cat([state_data, input], dim=-1)
-            stream_state.lengths += ref_length
+        if (buffer_lengths == ref_length).all():
+            buffer_data = torch.stack(buffer_data) 
+            input = torch.cat([buffer_data, input], dim=-1)
+        
         # If not, split batch into individual inputs and concatenate separately first.
         else:
-            input = torch.nn.utils.rnn.unpad_sequence(input.permute(2, 0, 1), stream_state.lengths)
-            input = [x if y is None else torch.cat([y, x]) for x, y in zip(input, state_data)]
-            stream_state.lengths += state_lengths
-            input = torch.nn.utils.rnn.pad_sequence(input).permute(1, 2, 0)
-            
-    # Update sequence lengths to include padding, which is used to compute output lengths.
-    if stream_state._any_first_or_last and p != 0:
-        stream_state._first_lengths += p
-        stream_state._last_lengths += p
-        
-        # Add padding to input if necessary.
-        total_p = stream_state.lengths.max().item() - input.size(-1)
-        if stream_state._all_first:
-            assert total_p >= p, "total padding should be greater than or equal to padding"
-            input = F.pad(input, (p, total_p - p))
-        elif total_p > 0:
-            input = F.pad(input, (0, total_p))
-            if stream_state._any_first:
-                input[stream_state.first] = torch.roll(input[stream_state.first], shifts=p, dims=-1)
-                
-    # Compute output lengths and updates states.
-    output_lengths = ((stream_state.lengths - k) // s + 1).clip(min=0)
-    next_start_pos = output_lengths * s
-    if k > 1:
-        for i, (start, end, _id) in enumerate(zip(next_start_pos, stream_state.lengths, stream_state.ids)):
-            self.input_states[_id] = input[i, ..., start:end]
-    
-    # Convolve input. 
-    stream_state.lengths = output_lengths
-    if stream_state.lengths.max().item() == 0:
-        input = None
-    else:
-        input = self.original_forward(input)
-        input = StreamTensor(input, stream_state)
-    
+            # TODO: This needs to be tested.
+            import IPython; IPython.embed(using=False, banner1="conv_1d_pre_hook")
+            input = input.unpad_sequence()
+            input = [a if b is None else torch.cat([b, a], dim=-1) for a, b in zip(input, buffer_data)]
+            input = pad_stream_tensor(input).transpose(1, 2)
+
     return input
 
-def conv_1d_module_specific_streaming(self, mode):
-    if mode:
-        self.padding = (0,)
-    else:
-        self.padding = self.original_padding
+
+def conv_1d_post_hook(self, inputs, outputs):
+    
+    if self.streaming:
+        outputs, buffer = outputs
+        self.stream_buffer.update(buffer)
+        
+        # TODO: Simplify this.
+        if outputs.stream_state.any_last:
+            for _id, is_last in zip(outputs.stream_state.ids, outputs.stream_state.is_last):
+                if is_last and _id in self.stream_buffer:
+                    del self.stream_buffer[_id]
+    
+    return outputs
 
 def patch_conv_1d(module):
     
-    # add streaming mode
-    module._module_specific_streaming = types.MethodType(conv_1d_module_specific_streaming, module)
+    # Add streaming mode.
     module.online = types.MethodType(online, module)
     module.offline = types.MethodType(offline, module)
     module.streaming = False
     
-    # add input_states dictionary
-    module.input_states = {}
+    # Add stream_buffer dictionary.
+    module.stream_buffer = {}
     
-    # verify padding behavior
-    assert module.padding_mode == "zeros", "padding mode is expected to be 'zeros'"
-    assert module.padding != "same", "'same' padding not supported for streaming"
-    module.original_padding = deepcopy(module.padding)
+    # Add module-specific attributes.
+    module.kernel_width = module.kernel_size[0] + (module.kernel_size[0] - 1) * (module.dilation[0] - 1)
     
-    # adjust forward behavior
-    module.original_forward = module.forward
-    module.forward = types.MethodType(conv_1d_streaming_forward, module)
+    # Register pre_hook and post_hook.
+    module.register_forward_pre_hook(conv_1d_pre_hook)
+    module.register_forward_hook(conv_1d_post_hook)
     
     return module
 

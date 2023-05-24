@@ -63,3 +63,21 @@ def pad_full_sequence(
         is_last=is_last,
         batch_first=batch_first
     )
+    
+def pad_stream_tensor(
+    sequences,
+    batch_first: bool = False
+) -> StreamTensor:
+    
+    state = StreamState.cat_batch([t.stream_state for t in sequences])
+    names = sequences[0].names
+    sequences = [t.tensor() for t in sequences]
+    
+    return pad_chunks(
+        sequences=sequences,
+        names=names,
+        ids=state.ids,
+        is_first=state.is_first,
+        is_last=state.is_last,
+        batch_first=batch_first
+    )
