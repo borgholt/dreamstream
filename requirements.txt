@@ -5,6 +5,7 @@ gpustat
 ipython
 jupyter
 jupyterlab-git
+more-itertools
 nbstripout
 num2words
 numpy
@@ -16,8 +17,9 @@ pytest-cov
 pytest-html
 rich
 ruff
+sphinx
+sphinx-rtd-theme
 tqdm
-more-itertools
 
 --extra-index-url https://download.pytorch.org/whl/cu118
 torch
