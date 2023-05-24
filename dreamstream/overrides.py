@@ -1,16 +1,40 @@
+import functools
 from copy import deepcopy
-
 from typing import Optional, List, Union
 
-from dreamstream.tensor import StreamTensor, StreamState, implements, require_all_stream_tensors
+import torch
+import torch.nn.functional as F
+from torch import Tensor
+
+from dreamstream.tensor import StreamTensor, StreamState
 from dreamstream.utils.flags import BATCH, LENGTH
 
-import torch
-from torch import Tensor
-import torch.nn.functional as F
+
+STREAM_TENSOR_FUNCTIONS = dict()
 
 
-    
+def all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]]) -> bool:
+    """Return True if all tensors are StreamTensors."""
+    return all(isinstance(t, StreamTensor) for t in tensors)
+
+
+def require_all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]], message: str = None):
+    """Raise an error if any of the tensors are not StreamTensors."""
+    if not all_stream_tensors(tensors):
+        message = message or "All tensors must be StreamTensors."
+        raise ValueError(message)
+
+
+def implements(torch_function):
+    """Register a torch function override for StreamTensor."""
+
+    def decorator(func):
+        functools.update_wrapper(func, torch_function)
+        STREAM_TENSOR_FUNCTIONS[torch_function] = func
+        return func
+
+    return decorator
+
 
 @implements(torch.cat)
 def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
@@ -204,3 +228,41 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
     state.lengths = output_lengths
     #TODO: Consider whether to zero out the padding.
     return StreamTensor(output, state), buffer
+
+
+# @implements(torch.stack)
+# def stack(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
+#     """Create a new dim and name it """
+
+
+# @implements(torch.vstack)
+# @implements(torch.hstack)
+
+# @implements(torch.split)
+# @implements(torch.chunk)
+
+# @implements(torch.flatten)
+
+# @implements(torch.squeeze)  # Never remove batch or length dims
+# @implements(torch.unsqueeze)  # Give new dim default name
+
+# @implements(torch.nn.utils.rnn.pad_sequence)
+# @implements(torch.nn.utils.rnn.unpad_sequence)
+
+# reduction methods
+# @implements(torch.sum)  # Fail if batch or length dim was removed? Maybe not.
+# @implements(torch.mean)
+# @implements(torch.std)
+# @implements(torch.var)
+# @implements(torch.median)
+# @implements(torch.topk)
+
+# indexing, slicing, joining, mutating methods
+# @implements(torch.index)
+# @implements(torch.gather)
+# @implements(torch.scatter)
+# @implements(torch.gather_index)
+
+# moving dimensions
+# @implements(torch.transpose)
+# @implements(torch.permute)
