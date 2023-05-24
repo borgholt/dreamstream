@@ -1,8 +1,9 @@
+import functools
 import uuid
 import itertools
 
 from copy import deepcopy
-from typing import Callable, List, Tuple, Sequence, Optional, Union
+from typing import Any, Callable, List, Self, Tuple, Sequence, Optional, Union
 
 import torch
 import numpy as np
@@ -14,6 +15,10 @@ from dreamstream.utils.flags import BATCH, LENGTH
 
 
 STREAM_TENSOR_FUNCTIONS = dict()
+
+
+# TODO (JDH): Make StreamState methods like cat, split and index lazily evaluated such that they only evaluate when they
+# are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the computation graph.
 
 
 class StreamState:
@@ -57,6 +62,9 @@ class StreamState:
         self.is_first = is_first
         self.is_last = is_last
         self.lengths = lengths
+        
+        self._lengths_mutated = True
+        self._max_lengths = None
 
         self._any_first = self.is_first.any().item()
         self._any_last = self.is_last.any().item()
@@ -65,11 +73,114 @@ class StreamState:
         self._all_last = self.is_last.all().item()
 
         self._any_first_or_last = self._any_first or self._any_last
+        
+    def __getitem__(self, indices: Union[int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]):
+        """Index the state along the batch and/or length dimensions."""
+        raise NotImplementedError()
+
+    def index_batch(self, indices: Union[int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]) -> "StreamState":
+        """Return a StreamState object with the specified batch indices."""
+        if isinstance(indices, torch.BoolTensor):
+            ids = [id for i, id in enumerate(self.ids) if indices[i]]
+            is_first = self.is_first[indices]
+            is_last = self.is_last[indices]
+            lengths = self.lengths[indices]
+            return StreamState(ids, is_first, is_last, lengths)
+
+        if isinstance(indices, int):
+            ids = [self.ids[indices]]
+            is_first = self.is_first[[indices]]
+            is_last = self.is_last[[indices]]
+            lengths = self.lengths[[indices]]
+            return StreamState(ids, is_first, is_last, lengths)
+
+        if isinstance(indices, slice):
+            ids = self.ids[indices]
+        else:  # List[int], Tuple[int, ...], torch.IntTensor
+            ids = [self.ids[i] for i in indices]
+
+        is_first = self.is_first[indices]
+        is_last = self.is_last[indices]
+        lengths = self.lengths[indices]
+        return StreamState(ids, is_first, is_last, lengths)
+
+    def index_length(self, indices: Union[int, slice, List[int], Tuple[int], torch.IntTensor, torch.BoolTensor]) -> "StreamState":
+        """Return a StreamState object with the specified length indices."""
+        if isinstance(indices, int):
+            # Convert negative indices to positive
+            if indices < 0:
+                indices = self.max_length + indices
+            # Set lengths to 1 for all examples except those where the integer index is in padding.
+            lengths = (self.lengths - indices).clamp(max=1)
+            is_first = self.is_first.clone() if indices == 0 else torch.zeros_like(self.is_first)
+            is_last = self.is_last & (self.lengths <= indices + 1)  # TODO (JDH): Would `self.lengths < indices` be better?
+            return StreamState(deepcopy(self.ids), is_first, is_last, lengths)
+
+        if isinstance(indices, slice):
+            # 
+            start, stop, stride = indices.indices(self.max_length)
+            if stride < 0:
+                # TODO (JDH): Allow negative strides only if all examples have the same length equal to tensor's length.
+                msg = "Negative strides are not supported on StreamTensors. Instead, use `reverse_sequence`."
+                raise NotImplementedError(msg)
+
+            if stride == 1:
+                lengths = (self.lengths.clamp(max=stop) - start)
+            else:
+                # Compute the right-most length index that is included in the slice from slice(start, stop, stride)
+                stop = self.max_length - ((self.max_length - 1 - start) % stride)
+                lengths = (self.lengths.clamp(max=stop) - start).div(stride).ceil().to(self.lengths.dtype)
+
+            is_first = self.is_first.clone() if start == 0 else torch.zeros_like(self.is_first)
+            is_last = self.is_last & (self.lengths <= stop)  # TODO (JDH): Would `self.lengths < indices` be better?
+            return StreamState(deepcopy(self.ids), is_first, is_last, lengths)
+
+        if isinstance(indices, (list, tuple)):
+            raise NotImplementedError("Indexing with lists and tuples is not yet implemented.")
+            # if not all(isinstance(i, int) for i in indices):
+            #     raise ValueError("Indices must contain integers but looked like multidimensional indexing.")
+
+            # Convert negative indices to positive
+            indices = [i if i >= 0 else self.max_length + i for i in indices]
+            
+            # Raise error if the indices are not sorted and any index is into padding (i.e. lengths < indices)
+            # TODO (JDH)
+
+            # if 0 in indices and indices.index(0) != 0:
+            #     raise NotImplementedError("Cannot index StreamState with 0 and other indices.")
+
+        if isinstance(indices, torch.Tensor) and indices.ndim == 1:
+            raise NotImplementedError("Indexing with 1D torch tensors is not yet implemented.")
+
+        if isinstance(indices, torch.Tensor) and indices.ndim > 1:
+            raise NotImplementedError("Indexing with multidimensional torch tensors is not supported.")
+            if indices.dtype == torch.bool:
+                # BoolTensor that has flattened the length dim along with other dims
+                # TODO (JDH): Set lengths 1 for any examples that have at least one True value.
+                pass
+            else:
+                # IntTensor that creates new dims off of the length dim
+                pass
+
+        raise NotImplementedError(f"Indexing with {indices} is not supported.")
+
+    def __copy__(self):
+        """Return a deep copy of the StreamState object."""
+        return StreamState(
+            ids=deepcopy(self.ids),
+            is_first=self.is_first.clone(),
+            is_last=self.is_last.clone(),
+            lengths=self.lengths.clone(),
+        )
+
+    def clone(self):
+        """Return a deep copy of the StreamState object."""
+        return self.__copy__()
 
     def __len__(self):
         return len(self.ids)
 
-    def __add__(self, other):
+    def __add__(self, other):  # TODO (JDH): Rename to cat_lengths
         if self.ids != other.ids:
             raise ValueError("Cannot add StreamStates with different ids.")
 
@@ -91,6 +202,14 @@ class StreamState:
             return self.__add__(other)
 
     @property
+    def max_length(self):
+        """Return the maximum length of the batch and recompute only if lengths have been mutated."""
+        if self._lengths_mutated:
+            self._max_length = self.lengths.max().item()
+            self._lengths_mutated = False
+        return self._max_length
+
+    @property
     def _first_lengths(self):
         return self.lengths[self.is_first]
 
@@ -109,17 +228,14 @@ class StreamState:
     def size(self):
         return len(self)
 
-    def drop_empty(self):
+    def drop_empty(self) -> Self:
         """Drop any tensors that are empty."""
-        self.filter(self.lengths > 0)
+        self.filter(self.lengths > 0)  # TODO (JDH): Replace with index_batch
 
-    def filter(self, mask: torch.BoolTensor):
-        """Keep only the batch examples where the mask is True."""
-        if not mask.all():
-            self.is_first = self.is_first[mask]
-            self.is_last = self.is_last[mask]
-            self.lengths = self.lengths[mask]
-            self.ids = [id for i, id in enumerate(self.ids) if mask[i]]
+    def filter(self, indics: Union[int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]) -> Self:
+        """Filter this StreamState inplace keeping only the batch examples at the given indices."""
+        self = self.index_batch(indics)
+        return self
 
     def __repr__(self):
         return f"StreamState(size={self.size()})"
@@ -214,6 +330,12 @@ class StreamState:
         return self.split_batch(1)
 
 
+# TODO (JDH): Implement a MultiLengthStreamState class that can handle multiple length dimensions.
+class MultiLengthStreamState():
+    def __init__(self) -> None:
+        raise NotImplementedError()
+
+
 def stream_state(
     ids: Union[str, List[str]],
     is_first: Union[bool, List[bool], torch.BoolTensor],
@@ -241,10 +363,6 @@ def stream_state(
     )
 
 
-# TODO (JDH): I think this should not inherit from torch.Tensor, but instead have a torch.Tensor as an attribute.
-#             The problem is that calls to torch.cat, torch.stack, etc. become recursive.
-
-
 class StreamTensor(torch.Tensor):
     @staticmethod
     def __new__(cls, data, stream_state: StreamState, *args, **kwargs) -> torch.Tensor:
@@ -261,22 +379,20 @@ class StreamTensor(torch.Tensor):
 
     @classmethod
     def __torch_function__(cls, func: Callable, types: List[torch.Tensor], args=(), kwargs=None):
-        # print("StreamTensor.__torch_function__ called with func:", func)
-
-        # TODO (JDH): Deal with empty StreamTensors.
+        # TODO (JDH): Deal with empty StreamTensors?
+        # import IPython
+        # IPython.embed(using=False, header="Hello from StreamTensor.__torch_function__")
 
         if kwargs is None:
             kwargs = dict()
 
         is_handled = func in STREAM_TENSOR_FUNCTIONS and all(issubclass(t, (torch.Tensor, StreamTensor)) for t in types)
-        print(f"\n\n{func.__name__}: {is_handled}\n\n")
+        # print(f"\n\n{func.__name__}: {is_handled=}\n\n")
+
         if is_handled:
-            # print("\n\n", cls, func, types, args, kwargs, "\n\n")
             return STREAM_TENSOR_FUNCTIONS[func](*args, **kwargs)
 
         out = super().__torch_function__(func, types, args, kwargs)
-        # TODO (JDH): Maybe check if batch and time dim are preserved, and if not, raise error.
-        #             This would happen if we used the `stream_tensor` method instead of `StreamTensor` class.
         if isinstance(out, torch.Tensor):
             # TODO: If more than one, assert that stream_states are identical, or raise error
             stream_states = [x.stream_state for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]
@@ -300,6 +416,20 @@ class StreamTensor(torch.Tensor):
     def stream_state(self, s: StreamState):
         self._stream_state = s
 
+    @property
+    def batch_dim(self) -> Union[int, None]:
+        try:
+            return self.names.index(BATCH)
+        except ValueError:
+            return None
+
+    @property
+    def length_dim(self) -> Union[int, None]:
+        try:
+            return self.names.index(LENGTH)
+        except ValueError:
+            return None
+
     def _is_batch_dim(self, dim: int) -> bool:
         return self.names[dim] == BATCH
 
@@ -307,12 +437,12 @@ class StreamTensor(torch.Tensor):
         # TODO: Refine to include multiple length dims
         return self.names[dim] == LENGTH
 
+    def batch_size(self):
+        return self.size(self.batch_dim)
+
     def max_length(self):
         # TODO: Refine to include multiple length dims
-        return self.size(self.names.index(LENGTH))
-
-    def batch_size(self):
-        return self.size(self.names.index(BATCH))
+        return self.size(self.length_dim)
 
     def tensor(self, keep_names: bool = False) -> torch.Tensor:
         """Return the underlying torch.Tensor."""
