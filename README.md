@@ -89,6 +89,10 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
       - operations that create new dimensions: Adjust `batch_dim` and `stream_dim` accordlingly. This could happen anywhere.
   - Seperate arguments to forward method: We can change all patched forward methods to take additional arguments, but, by default they won't be given (and we have no control).
 
+## Can we use DreamStream for training?
+
+- Case 1: Forward pass each chunk and compute loss. Detach module stream buffers after each module forward. Backpropagate and update parameters. This is O(1) memory in terms of the number of chunks for convolutions and RNNs but O(N^2) for Transformers.
+- Case 2: Forward pass each chunk and collect logits, but do not detach stream buffers. Concatenate logits and compute loss. Backpropagate. This will backpropagate through the entire stream. This is less memory efficient for convolutions and RNNs O(N), in terms of the number of chunks.
 
 
 ## Cool features
@@ -96,6 +100,11 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
 - Patched module can provide estimate of state size (can be used to estimate memory requirements for given input lengths).
 - Length-based sampling: When processing files in bulk, first sort files by length to minimize padding.
 - Maybe we can support the EmFormer architecture.
+
+
+## Documentation
+
+Documentation is written in Sphinx and is inspired by [PyTorch](https://github.com/pytorch/pytorch/tree/main/docs).
 
 
 ## Installation
