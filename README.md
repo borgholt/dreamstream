@@ -15,6 +15,65 @@ DreamStream is a Python package for making PyTorch models work efficiently in on
 </h3>
 
 
+## Patching an `nn.Module`
+
+DreamStream introduces a new method called `patch_module` which augments an `nn.Module` with the ability to process `StreamTensor`s. This ability is added to the module in the form of a new processing mode called `online` that is orthogonal to the existing `train` and `eval` modes.
+
+```python
+import dreamstream as ds
+
+model = MyModel()
+ds.patch_module(model)
+```
+
+
+## The `StreamTensor` object
+
+DreamStream introduces one primary data structure called a `StreamTensor` which is a subclass of `torch.Tensor`.
+
+
+## Behaviour matrix
+
+| Module mode      | `Tensor`                                                                             | `StreamTensor`                                                                          |
+|-----------------|:------------------------------------------------------------------------------------:|:---------------------------------------------------------------------------------------:|
+| <span style="color:LightCoral"><b>Offline</b></span> - Train | <span style="color:green;font-size:18px"><b>&#10003;</b></span> Standard behavoiur | <span style="color:red;font-size:18px"><b>&#10007;</b></span>   Not supported          |
+| <span style="color:LightCoral"><b>Offline</b></span> - Eval  | <span style="color:green;font-size:18px"><b>&#10003;</b></span> Standard behavoiur | <span style="color:red;font-size:18px"><b>&#10007;</b></span>   Not supported          |
+| <span style="color:DarkSeaGreen"><b>Online</b></span> - Train  | <span style="color:red;font-size:18px"><b>&#10007;</b></span> Not supported      | <span style="color:green;font-size:18px"><b>&#10003;</b></span> DreamStream behaviour |
+| <span style="color:DarkSeaGreen"><b>Online</b></span> - Eval   | <span style="color:red;font-size:18px"><b>&#10007;</b></span> Not supported      | <span style="color:green;font-size:18px"><b>&#10003;</b></span> DreamStream behaviour |
+
+
+**DreamStream behaviour**
+
+If a module has been patched with `patch_module` and then set to `online`, DreamStream augments the standard PyTorch behaviour to support online processing. 
+This means, that any call to `.forward()` now expects that all `torch.Tensor` inputs are replaced by `StreamTensor` inputs.
+
+The patched module, and its child modules, will then keep buffers of the internal state of the module for each `StreamTensor` input keyed by the `StreamTensor`'s `StreamMetaData.ids`.
+
+We support <span style="color:DarkSeaGreen"><b>online</b></span> processing using `StreamTensor`s both for the `train` and `eval` modes. 
+
+> <span style="color:DarkSeaGreen"><b>Online</b></span> - **Eval**
+>
+> If the module is <span style="color:DarkSeaGreen"><b>online</b></span> and in `eval` mode, any call to forward ...
+
+> <span style="color:DarkSeaGreen"><b>Online</b></span> - **Train**
+>
+> If the module is <span style="color:DarkSeaGreen"><b>online</b></span> in `train` mode, any call to forward ...
+> 
+> We support `train` mode in the following variations:
+>
+> 1. **Chunk-wise backpropagation with aligned targets**: If `patch_module` was called with `train_variant="chunk-wise-aligned"`, a full forward-backward pass is performed on each chunk but with the forward pass conditioned on the detached (`.detach()`) state of the previous chunk that was forwarded on this `id`. This requires that each chunk of a larger file has targets, i.e. a single file level target is not supported. This mode is constant memory complexity in terms of the number of chunks and therefore enables training a large files. However, it does not backpropagate gradients through the entire file but only within each chunk.
+> 2. **Full backpropagation with aligned targets**: If `patch_module` was called with `train_variant="full-file-aligned"`, a forward pass is performed on each chunk with the forward pass conditioned on the state (*not detached*) of the previous chunk that was forward on this `id`. For each chunk we compute the loss which requires chunk-aligned targets as for 1, and after the an entire file has been processed, we perform a backward pass on the total loss. This mode only provides memory savings compared to naively forward-backward passing the entire file at once if the model has superlinear memory complexity in terms of the sequence length. This mode is therefore not recommended for models with linear memory complexity such as RNNs and CNNs.
+> 3. **Full backpropagation with unaligned targets**: If `patch_module` was called with `train_variant="full-file-unaligned"`, behaviour is like 2, but we accept a single target for a file (*do not require chunk-aligned targets*). Instead, from the chunk-wise forward calls, we accumulate the outputs needed to compute the total loss on the file level. Once a file has ended, we then compute the total loss and perform a backward pass. As for 2., this mode is only recommended for models with linear memory complexity such as RNNs and CNNs.
+> 4. **Standard training**: If the `StreamTensor` passed to `.forward()` represents the entire file (i.e. has all `sos` and all `eos` True), the <span style="color:DarkSeaGreen"><b>online</b></span> `train` mode behaves like the standard PyTorch <span style="color:LightCoral"><b>offline</b></span> `train` mode, as could be expected. This will be the behaviour regardless of the `train_variant` defined in `patch_module`.
+
+
+## TorchScript and ONNX
+
+DreamStream supports TorchScript and ONNX export of patched modules. To compile a model that has DreamStream behaviour, the scripting, tracing and exporting must be done on a module in <span style="color:DarkSeaGreen"><b>online</b></span> mode. If in <span style="color:LightCoral"><b>offline</b></span> mode, the model would be exported as a standard PyTorch model. 
+
+Exporting the patched model using the `dynamic_axes=False` argument to `torch.onnx.export` will export the model such that it works for a fixed chunk size. This is the most common case since models are usually served for streaming using a constant chunk size. Alternatively, if `dynamic_axes=True`, the model will be exported such that it works for any chunk size. This is useful if the model is to be used for streaming with variable chunk sizes but comes at the cost of a performance penalty.
+
+
 ## Interface
 
 ```python
@@ -24,8 +83,8 @@ ds.StreamModule  # automatically patches itself after __init__
 ds.stream_tensor
 ds.StreamTensor
 
-ds.stream_state
-ds.StreamState
+ds.meta
+ds.StreamMetadata
 
 ds.ChunkModule  # maybe functional similar to ds.patch_module
 
@@ -49,7 +108,6 @@ class StreamModule(nn.Module):
 ```
 
 
-
 ## What problem does this solve?
 
 PyTorch models are typically trained and evaluated on batches of data. However, in online settings, such as speech recognition, data is often streamed in one sample at a time. This means that the model must be able to process a single sample at a time, and that the model must be able to process the sample as soon as it is received. This is not possible with the standard PyTorch API, which requires the entire example to be collected before the model can be evaluated.
@@ -65,6 +123,7 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
 
 1. Transcribe a large number of files stored on disk (for example). The files are already fully available, but the files may be too long to process in full length due to memory.
 2. Transcribe a live audio stream. The audio is not available in full length, but must be processed as it is received. Such a stream could be a live audio stream from a microphone, or a stream of audio chunks from a network connection.
+
 
 ## What concerns are there about this approach?
 

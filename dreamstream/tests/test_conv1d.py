@@ -33,10 +33,10 @@ conv.online()
 for x in batch.split(chunks, dim=2):
     names = x.names
     x.rename_(None)
-    x = x[x.stream_state.lengths > 0]
+    x = x[x.meta.lengths > 0]
     x.rename_(*names)
-    x.stream_state.drop_empty()
-    assert x.size(0) == len(x.stream_state)
+    x.meta.drop_empty()
+    assert x.size(0) == len(x.meta)
     y = conv(x)
     stream_output.update(y)
     
