@@ -6,7 +6,7 @@ import torch
 import torchaudio
 from torch.nn.utils.rnn import pad_sequence
 
-from dreamstream.tensor import StreamTensor, StreamState
+from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
@@ -14,8 +14,8 @@ from dreamstream.utils.flags import BATCH, LENGTH
 class AudioSample:
     """Data for a sample of audio from a single audio file."""
     data: torch.Tensor
-    is_first: bool
-    is_last: bool
+    sos: bool
+    eos: bool
     length: int
     chunk_index: Optional[int] = None
     num_chunks: Optional[int] = None
@@ -65,19 +65,19 @@ class AudioSample:
 #         chunks = torch.split(tensor, chunk_size, dim=0)
 #         for i, chunk in enumerate(chunks):
             
-#             # Create stream state.
-#             is_first = torch.full((tensor.size(1),), i == 0, dtype=torch.bool)
-#             is_last = num_chunks == (i + 1)
+#             # Create stream metadata.
+#             sos = torch.full((tensor.size(1),), i == 0, dtype=torch.bool)
+#             eos = num_chunks == (i + 1)
 #             chunk_lengths = torch.clip(lengths - (i * chunk_size), min=0, max=chunk_size)
-#             stream_state = StreamState(ids, is_first, is_last, chunk_lengths)
+#             meta = StreamMetadata(ids, sos, eos, chunk_lengths)
             
 #             # Discard empty sequences.
 #             mask = chunk_lengths > 0
-#             stream_state.filter(mask)
+#             meta.filter(mask)
 #             chunk = chunk[:, mask].refine_names(*names) # TODO: After implementing masked select, call refine names earlier.
             
 #             # Convert to stream tensor chunk.
-#             chunk = StreamTensor(chunk, stream_state)
+#             chunk = StreamTensor(chunk, meta)
 #             self.append(chunk)
         
 #         self.chunk_size = chunk_size
@@ -85,48 +85,49 @@ class AudioSample:
 #         self.lengths = lengths
 #         self.num_chunks = num_chunks
 
+
 class ChunkedList(list):
     
-    def __init__(self, chunks: List[StreamTensor], stream_state: StreamState):
+    def __init__(self, chunks: List[StreamTensor], meta: StreamMetadata):
         self += chunks
-        self.stream_state = stream_state
+        self.meta = meta
     
     @property
     def num_chunks(self):
         return len(self)    
-        
+
+
 class OutputCollector(dict):
     
     def __init__(self, *stream_tensor: StreamTensor):
         super().__init__()
         self.closed_entries = set()
         self.update(*stream_tensor)
+
+    def update(self, *stream_tensors: Tuple[StreamTensor]):
         
-    def update(self, *stream_tensor: StreamTensor):
-        
-        for t in stream_tensor:
+        for t in stream_tensors:
             if BATCH in t.names:
                 for x in t.unpad_sequence():
-                    if x.stream_state.max_length > 0:
+                    if x.meta.max_length > 0:
                         self._update_unary(x)  
             else:
-                assert stream_tensor.stream_state.size() == 1, "The tensor has no batch dimension, but state has multiple elements."
+                assert t.meta.size() == 1, "The tensor has no batch dimension, but metadata has multiple elements."
                 self._update_unary(t)
                 
     def _update_unary(self, stream_tensor: StreamTensor):
         
-        _id = stream_tensor.stream_state.ids[0]
+        _id = stream_tensor.meta.ids[0]
         
         if _id in self.closed_entries:
             raise ValueError(f"The entry for {_id} has already been closed.")
-        if stream_tensor.stream_state.is_last.item():
+        if stream_tensor.meta.eos.item():
             self.closed_entries.add(_id)
         
         if _id in self:
-            assert not stream_tensor.stream_state.is_first.item(), "The tensor is the first chunk."
+            assert not stream_tensor.meta.sos.item(), "The tensor is the first chunk."
             length_dim = stream_tensor.names.index(LENGTH)
             self[_id] = torch.cat([self[_id], stream_tensor], dim=length_dim)
         else:
-            assert stream_tensor.stream_state.is_first.item(), "The tensor is not the first chunk."
+            assert stream_tensor.meta.sos.item(), "The tensor is not the first chunk."
             self[_id] = stream_tensor
-                

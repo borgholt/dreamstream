@@ -17,7 +17,7 @@ import torchaudio
 from torch.utils.data import IterableDataset, DataLoader
 
 from dreamstream.data.data_objects import AudioSample
-from dreamstream.tensor import BATCH, LENGTH, StreamTensor, StreamState, stream_tensor
+from dreamstream.tensor import BATCH, LENGTH, StreamTensor, StreamMetadata, stream_tensor
 
 
 LOGGER = logging.getLogger(__file__)
@@ -150,9 +150,9 @@ class AudioStreamDataset(IterableDataset):
             yield to_yield
             to_yield = value
 
-        # yield last batch with is_last=True on all samples
+        # yield last batch with eos=True on all samples
         for sample in to_yield:
-            sample.is_last = True
+            sample.eos = True
 
         yield to_yield
 
@@ -176,8 +176,8 @@ class AudioStreamDataset(IterableDataset):
         for i, audio_chunk in enumerate(audio_chunks):
             audio_sample = AudioSample(
                 data=audio,
-                is_first=(i == 0),
-                is_last=(i == len(audio_chunks) - 1),
+                sos=(i == 0),
+                eos=(i == len(audio_chunks) - 1),
                 length=audio_chunk.shape[-1],
                 chunk_index=i,
                 num_chunks=len(audio_chunks),
@@ -221,7 +221,7 @@ class AudioStreamDataset(IterableDataset):
 
     @staticmethod
     def custom_collate(batch: List[AudioSample]) -> StreamTensor:
-        """Collate a batch of AudioSample instances into a StreamTensor which is a torch.Tensor wth a StreamState."""
+        """Collate a batch of AudioSample instances into a StreamTensor which is a torch.Tensor wth a StreamMetadata."""
         # sort by length
         batch = sorted(batch, key=lambda x: x.length, reverse=True)
 
@@ -233,12 +233,12 @@ class AudioStreamDataset(IterableDataset):
 
         # collate batch metadata
         lengths = torch.tensor([sample.length for sample in batch])
-        is_first = torch.tensor([sample.is_first for sample in batch])
-        is_last = torch.tensor([sample.is_last for sample in batch])
+        sos = torch.tensor([sample.sos for sample in batch])
+        eos = torch.tensor([sample.eos for sample in batch])
         ids = [sample.id for sample in batch]
 
-        # create stream tensor and its state
-        batch = stream_tensor(data, ids, is_first, is_last, lengths)
+        # create stream tensor and its meta
+        batch = stream_tensor(data, ids, sos, eos, lengths)
         return batch
 
     def split(self, max_workers: int, batch_size: int, shuffle: bool, drop_last: bool):
@@ -412,20 +412,20 @@ if __name__ == "__main__":
         for batch in loader:
             batches.append(batch)
 
-            files_seen.update(batch.stream_state.ids)
+            files_seen.update(batch.meta.ids)
             sample_ids = [
-                f"{batch.stream_state.ids[i]} {batch.stream_state.chunk_index[i]:2d}"
-                for i in range(len(batch.stream_state.ids))
+                f"{batch.meta.ids[i]} {batch.meta.chunk_index[i]:2d}"
+                for i in range(len(batch.meta.ids))
             ]
             samples_seen.extend(sample_ids)
 
-            filenames = [id.split("/")[-1].split(".")[0] for id in batch.stream_state.ids]
-            chunk_idx = [chunk_index for chunk_index in batch.stream_state.chunk_index]
-            is_first = [int(is_first) for is_first in batch.stream_state.is_first]
-            is_last = [int(is_last) for is_last in batch.stream_state.is_last]
+            filenames = [id.split("/")[-1].split(".")[0] for id in batch.meta.ids]
+            chunk_idx = [chunk_index for chunk_index in batch.meta.chunk_index]
+            sos = [int(sos) for sos in batch.meta.sos]
+            eos = [int(eos) for eos in batch.meta.eos]
 
             filenames_with_index = [f"{filename} {idx:2d}" for filename, idx in zip(filenames, chunk_idx)]
-            print(filenames_with_index, is_first, is_last)
+            print(filenames_with_index, sos, eos)
 
         print(f"Time taken: {time.time() - ts:.2f} s")
 

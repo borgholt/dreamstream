@@ -6,10 +6,13 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from dreamstream.tensor import StreamTensor, StreamState, STREAM_TENSOR_FUNCTIONS
+from dreamstream.tensor import StreamTensor, StreamMetadata, STREAM_TENSOR_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
+# Wrap whatever functools.update_wrapper usually wraps, except __doc__
+WRAPPER_ASSIGNMENTS = tuple(set(functools.WRAPPER_ASSIGNMENTS) - {"__doc__"})
+TORCH_DOC_LINEWIDTH = 80
 
 
 def all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]]) -> bool:
@@ -24,11 +27,17 @@ def require_all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]], messa
         raise ValueError(message)
 
 
+def augment_documentation(torchstream_doc: str, torch_doc: str) -> str:
+    """Augment the documentation of a function to include information about StreamTensors."""
+    return f"""{torchstream_doc}\n\n{"=" * TORCH_DOC_LINEWIDTH}\n\n{torch_doc}"""
+
+
 def implements(torch_function):
     """Register a torch function override for StreamTensor."""
 
     def decorator(func):
-        functools.update_wrapper(func, torch_function)
+        functools.update_wrapper(func, torch_function, assigned=WRAPPER_ASSIGNMENTS)
+        func.__doc__ = augment_documentation(func.__doc__, torch_function.__doc__)
         STREAM_TENSOR_FUNCTIONS[torch_function] = func
         return func
 
@@ -50,42 +59,42 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
         return tensors[0]
     
     # Concatenation of at least one StreamTensor along the batch dimension.
-    is_batch_dim = [t._is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]
+    is_batch_dim = [t.is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]
     if any(is_batch_dim):
         require_all_stream_tensors(tensors, "Cannot concatenate StreamTensor and torch.Tensor along batch dimension.")
-        stream_state = StreamState.cat_batch([t.stream_state for t in tensors])  # TODO (JDH): Make this lazily evaluated.
+        meta = StreamMetadata.cat_batch([t.meta for t in tensors])  # TODO (JDH): Make this lazily evaluated.
         tensors = [t.named_tensor() for t in tensors]
         tensor = torch.cat(tensors, dim=dim, out=out)
-        return StreamTensor(tensor, stream_state)
+        return StreamTensor(tensor, meta)
 
     # Concatenation of at least one StreamTensor along the length dimension.
     is_length_dim = [t.is_length_dim(dim) for t in tensors if isinstance(t, StreamTensor)]
     if any(is_length_dim):
         for t in tensors[:-1]:
-            if isinstance(t, StreamTensor) and t.stream_state.lengths.min() < t.max_length():
+            if isinstance(t, StreamTensor) and t.meta.lengths.min() < t.max_length():
                 raise NotImplementedError("Only the last tensor can be padded when concatenating along the length dimension.")
-        stream_state = StreamState.cat_length([t.stream_state for t in tensors if isinstance(t, StreamTensor)])
-        stream_state.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])
+        meta = StreamMetadata.cat_length([t.meta for t in tensors if isinstance(t, StreamTensor)])
+        meta.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])
         tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
         tensor = torch.cat(tensors, dim=dim, out=out)
-        return StreamTensor(tensor, stream_state)
+        return StreamTensor(tensor, meta)
 
     # Concatenation along a dimension that is neither batch nor length.
     for t in tensors[:-1]:
-        if not t.stream_state == tensors[0].stream_state:
+        if not t.meta == tensors[0].meta:
             raise ValueError(f"It's ambiguos to concatenate tensors with different stream states along dim {dim}.")
-    stream_state = deepcopy(tensors[0].stream_state)
+    meta = deepcopy(tensors[0].meta)
     tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
     tensor = torch.cat(tensors, dim=dim, out=out)
-    return StreamTensor(tensor, stream_state)
+    return StreamTensor(tensor, meta)
 
 
 @implements(torch.permute)
 def permute(tensor: StreamTensor, dims: List[int]):
     names = [tensor.names[dim] for dim in dims]
-    state = tensor.stream_state
+    meta = tensor.meta
     tensor = tensor.tensor().permute(*dims)
-    return StreamTensor(tensor, state).rename(*names)
+    return StreamTensor(tensor, meta).rename(*names)
 
 
 @implements(torch.Tensor.permute)
@@ -115,17 +124,17 @@ def tensor_permute(tensor: StreamTensor, *dims: int):
 @implements(torch.functional.split)
 @implements(torch.split)
 def split(tensor: StreamTensor, split_size_or_sections: Union[int, List[int]], dim: int = 0):
-    state = tensor.stream_state
+    meta = tensor.meta
     tensor = tensor.named_tensor()
     
     if tensor.names[dim] in (LENGTH, BATCH):
-        states = state.split(split_size_or_sections, tensor.names[dim])
+        states = meta.split(split_size_or_sections, tensor.names[dim])
         tensors = tensor.split(split_size_or_sections, dim=dim)
         assert len(tensors) == len(states)
         tensors = [StreamTensor(t, s) for t, s in zip(tensors, states)]
     else:
         tensors = tensor.split(split_size_or_sections, dim=dim)
-        tensors = [StreamTensor(t, state) for t in tensors]
+        tensors = [StreamTensor(t, meta) for t in tensors]
 
     return tensors
 
@@ -134,22 +143,22 @@ def split(tensor: StreamTensor, split_size_or_sections: Union[int, List[int]], d
 @implements(torch.Tensor.unbind)
 def unbind(tensor: StreamTensor, dim=0):
     if tensor.names[dim] == LENGTH:
-        # TODO: Implement this along with "split_length" for the StreamState.
+        # TODO: Implement this along with "split_length" for the StreamMetadata.
         raise ValueError(
             "Unbinding along the length dimension is not permitted - StreamTensors must have a length dimension."
         )
 
-    state = tensor.stream_state
+    meta = tensor.meta
     tensor = tensor.named_tensor()
     
     if tensor.names[dim] == BATCH:
-        states = state.unbind_batch()
+        states = meta.unbind_batch()
         tensors = tensor.unbind(dim=dim)
         assert len(tensors) == len(states)
         tensors = [StreamTensor(t, s) for t, s in zip(tensors, states)]
     else:
         tensors = tensor.unbind(dim=dim)
-        tensors = [StreamTensor(t, state) for t in tensors]
+        tensors = [StreamTensor(t, meta) for t in tensors]
 
     return tensors
 
@@ -164,13 +173,13 @@ def chunk(tensor: StreamTensor, chunks: int, dim=0):
 
 @implements(torch.nn.functional.pad)
 def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: float = None):
-    state = input.stream_state
+    meta = input.meta
     names = input.names
     input = input.named_tensor().rename(None)
-    # TODO: Adapt stream_state
+    # TODO: Adapt meta
     output = torch.nn.functional.pad(input, pad, mode=mode, value=value)
     output = output.rename(*names)
-    return StreamTensor(output, state)
+    return StreamTensor(output, meta)
 
 
 
@@ -193,47 +202,47 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
     
     # Compute kernel width and detach metadata and names. 
     kernel_width = weight.shape[2] + (weight.shape[2] - 1) * (dilation[0] - 1)
-    state = input.stream_state
+    meta = input.meta
     names = input.names
     input = input.tensor()
     
     if padding > 0:
         
         # Adjust input lengths.
-        if state.all_first_and_last:
-            state.lengths += padding * 2
-        elif state.any_first_or_last:
-            state._first_lengths += padding
-            state._last_lengths += padding
+        if meta.all_starting_and_ending:
+            meta.lengths += padding * 2
+        elif meta.any_starting_or_ending:
+            meta.starting_lengths += padding
+            meta.ending_lengths += padding
         
         # Apply padding.
-        if not state.all_first_and_last:
-            applied_padding = state.max_length - input.size(-1)
+        if not meta.all_starting_and_ending:
+            applied_padding = meta.max_length - input.size(-1)
             if applied_padding > 0:
-                if state.all_first:
+                if meta.all_starting:
                     assert applied_padding >= padding, "total padding should be greater than or equal to padding"
                     input = F.pad(input, (padding, applied_padding - padding))
                 else:
                     input = F.pad(input, (0, applied_padding))
-            if state.any_first and not state.all_first:
-                input[state.is_first] = torch.roll(input[state.is_first], shifts=padding, dims=-1)
+            if meta.any_starting and not meta.all_starting:
+                input[meta.sos] = torch.roll(input[meta.sos], shifts=padding, dims=-1)
             padding = 0     
     
     # Create buffer.
-    output_lengths = ((state.lengths - kernel_width) // stride[0] + 1).clip(min=0)
+    output_lengths = ((meta.lengths - kernel_width) // stride[0] + 1).clip(min=0)
     next_start = output_lengths * stride[0]
     buffer = {}
-    if kernel_width > 1 and (not state.all_last):
-        for i, (start, end, _id, is_last) in enumerate(zip(next_start, state.lengths, state.ids, state.is_last)):
-            if not is_last:
+    if kernel_width > 1 and (not meta.all_ending):
+        for i, (start, end, _id, eos) in enumerate(zip(next_start, meta.lengths, meta.ids, meta.eos)):
+            if not eos:
                 buffer[_id] = input[i, ..., start:end]
     
     # Convolve input and revert to StreamTensor.
     output = torch.conv1d(input, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
     output.rename_(*names)
-    state.lengths = output_lengths
+    meta.lengths = output_lengths
     #TODO: Consider whether to zero out the padding.
-    return StreamTensor(output, state), buffer
+    return StreamTensor(output, meta), buffer
 
 
 def is_multidimensional_indexing(indices: Union[None, int, slice, List[Any], Tuple[Any, ...]]):
@@ -328,50 +337,50 @@ def determine_dims_affected_by_indexing(tensor: StreamTensor, indices: Union[Non
     raise NotImplementedError(msg)
     
 
-# @implements(torch.Tensor.__getitem__)
-# def __getitem__(self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]) -> StreamTensor:
+@implements(torch.Tensor.__getitem__)
+def __getitem__(self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]) -> StreamTensor:
 
-#     stream_state = self.stream_state
-#     tensor = self.tensor().rename(None)
-#     indexed_tensor = tensor[indices]
+    meta = self.meta
+    tensor = self.tensor().rename(None)
+    indexed_tensor = tensor[indices]
 
-#     dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
+    dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
 
-#     if new_names:
-#         indexed_tensor = indexed_tensor.refine_names(*new_names)
-#     else:
-#         indexed_tensor = indexed_tensor.rename(*self.names)
+    if new_names:
+        indexed_tensor = indexed_tensor.refine_names(*new_names)
+    else:
+        indexed_tensor = indexed_tensor.rename(*self.names)
 
-#     batch_dim = self.batch_dim
-#     length_dim = self.length_dim
-#     any_is_batch_dim = any([dim == batch_dim for dim in dims_affected])
-#     any_is_length_dim = any([dim == length_dim for dim in dims_affected])
-#     # import IPython
-#     # IPython.embed(using=False)
+    batch_dim = self.batch_dim
+    length_dim = self.length_dim
+    any_is_batch_dim = any([dim == batch_dim for dim in dims_affected])
+    any_is_length_dim = any([dim == length_dim for dim in dims_affected])
+    # import IPython
+    # IPython.embed(using=False)
 
-#     if any_is_batch_dim or any_is_length_dim:
-#         if any_index_is_multidimensional_tensor(indices):
-#             msg = "Indexing with a >1D tensor that affects the batch or length dimensions is not supported."
-#             raise NotImplementedError(msg)
+    if any_is_batch_dim or any_is_length_dim:
+        if any_index_is_multidimensional_tensor(indices):
+            msg = "Indexing with a >1D tensor that affects the batch or length dimensions is not supported."
+            raise NotImplementedError(msg)
 
-#         # TODO (JDH): Handle simultaneous indexing along the batch and length dimensions.
-#         # e.g.
-#         # >>> stream_state[index]
-#         # where index is Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]] and indexes batch or length or both
-#         if any_is_length_dim:
-#             # Get the index that was used along the length dimension of the tensor.
-#             index = indices[length_dim] if is_multidimensional_indexing(indices) else indices
-#             stream_state = stream_state.index_length(index)
+        # TODO (JDH): Handle simultaneous indexing along the batch and length dimensions.
+        # e.g.
+        # >>> meta[index]
+        # where index is Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]] and indexes batch or length or both
+        if any_is_length_dim:
+            # Get the index that was used along the length dimension of the tensor.
+            index = indices[length_dim] if is_multidimensional_indexing(indices) else indices
+            meta = meta.index_length(index)
 
-#         if any_is_batch_dim:
-#             # Get the index that was used along the batch dimension of the tensor.
-#             index = indices[batch_dim] if is_multidimensional_indexing(indices) else indices
-#             stream_state = stream_state.index_batch(index)
-#     else:
-#         stream_state = stream_state.clone()
+        if any_is_batch_dim:
+            # Get the index that was used along the batch dimension of the tensor.
+            index = indices[batch_dim] if is_multidimensional_indexing(indices) else indices
+            meta = meta.index_batch(index)
+    else:
+        meta = meta.clone()
 
-#     stream_tensor = StreamTensor(indexed_tensor, stream_state)
-#     return stream_tensor
+    stream_tensor = StreamTensor(indexed_tensor, meta)
+    return stream_tensor
 
 
 # @implements(torch.stack)

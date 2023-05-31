@@ -5,7 +5,7 @@ from copy import deepcopy
 import torch
 import torch.nn.functional as F
 
-from dreamstream.tensor import StreamTensor, StreamState
+from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.patches.general import online, offline
 from dreamstream.nn.utils import pad_stream_tensor
 
@@ -22,8 +22,8 @@ def conv_1d_pre_hook(self, inputs):
     assert isinstance(input, StreamTensor), "The input is expected to be StreamTensor when in online mode."
         
     # If all inputs are NOT first, collect states for all.
-    if (self.kernel_width > 1) and (not input.stream_state.all_first):
-        buffer_data = [self.stream_buffer[_id] if _id in self.stream_buffer else None for _id in input.stream_state.ids]
+    if (self.kernel_width > 1) and (not input.meta.all_starting):
+        buffer_data = [self.stream_buffer[_id] if _id in self.stream_buffer else None for _id in input.meta.ids]
         buffer_lengths = torch.as_tensor([0 if x is None else x.size(-1) for x in buffer_data])
         assert buffer_lengths.min() >= 0, "At least one buffer should have length greater than zero."
         ref_length = buffer_lengths[0]
@@ -50,9 +50,9 @@ def conv_1d_post_hook(self, inputs, outputs):
         self.stream_buffer.update(buffer)
         
         # TODO: Simplify this.
-        if outputs.stream_state.any_last:
-            for _id, is_last in zip(outputs.stream_state.ids, outputs.stream_state.is_last):
-                if is_last and _id in self.stream_buffer:
+        if outputs.meta.any_end:
+            for _id, eos in zip(outputs.meta.ids, outputs.meta.eos):
+                if eos and _id in self.stream_buffer:
                     del self.stream_buffer[_id]
     
     return outputs
@@ -117,17 +117,17 @@ if __name__ == '__main__':
     for n in range(N):
         x1 = torch.rand(1, 32, randint(1, 20))
         #x2 = pad_sequence([x1, torch.rand(1, 32, randint(args.kernel_size, 50))], batch_first=True, padding_value=0)
-        ss1 = StreamState(ids=["test_1"], lengths=[x1.size(-1)], is_first=[n == 0], is_last=[n == N - 1])
-        #ss2 = StreamState(ids=["test_1", "test_2"], lengths=[x1.size(-1), x2.size(-1)], first=[n == 0] * 2, last=[n == N - 1] * 2)
-        xs1 = StreamTensor(x1, stream_state=ss1)
-        #xs2 = StreamTensor(x2, stream_state=ss2)
+        ss1 = StreamMetadata(ids=["test_1"], lengths=[x1.size(-1)], sos=[n == 0], eos=[n == N - 1])
+        #ss2 = StreamMetadata(ids=["test_1", "test_2"], lengths=[x1.size(-1), x2.size(-1)], first=[n == 0] * 2, last=[n == N - 1] * 2)
+        xs1 = StreamTensor(x1, meta=ss1)
+        #xs2 = StreamTensor(x2, meta=ss2)
         stream_inputs.append(xs1)
         #stream_batch_inputs.append(xs2)
         inputs.append(x1)
     
     x_full = torch.cat(inputs, dim=-1)
-    s = StreamState(ids=["test_2"], lengths=[x_full.size(-1)], is_first=[True], is_last=[True])
-    x_full_stream = StreamTensor(x_full, stream_state=s)
+    s = StreamMetadata(ids=["test_2"], lengths=[x_full.size(-1)], sos=[True], eos=[True])
+    x_full_stream = StreamTensor(x_full, meta=s)
     
     conv1d = torch.nn.Conv1d(args.in_channels, args.out_channels, args.kernel_size, args.stride, padding=2)
     

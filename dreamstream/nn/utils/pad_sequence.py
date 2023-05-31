@@ -4,20 +4,20 @@ from typing import Optional, Sequence, List, Union
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from dreamstream.tensor import StreamTensor, StreamState
+from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.utils.flags import BATCH, LENGTH
 
 def pad_chunks(
     sequences,
     names: List[str],
     ids: List[str],
-    is_first: Union[List[bool], torch.BoolTensor],
-    is_last: Union[List[bool], torch.BoolTensor],
+    sos: Union[List[bool], torch.BoolTensor],
+    eos: Union[List[bool], torch.BoolTensor],
     batch_first: bool = False
 ) -> StreamTensor:
     
     # Why not allow a length argument? Because then lengths can be passed, which should be inferred.
-    # Why not allow a state argument? Same as above.
+    # Why not allow a meta argument? Same as above.
     # Why not allow names to be inferred from the sequences? Because then permute won't work.
     
     if BATCH in names:
@@ -36,14 +36,14 @@ def pad_chunks(
     tensor = pad_sequence(sequences, batch_first=batch_first)
     tensor = tensor.rename(*names)
     
-    state = StreamState(
+    meta = StreamMetadata(
         ids=ids,
-        is_first=is_first,
-        is_last=is_last,
+        sos=sos,
+        eos=eos,
         lengths=lengths
     )
     
-    return StreamTensor(data=tensor, stream_state=state) 
+    return StreamTensor(data=tensor, meta=meta) 
                         
 def pad_full_sequence(
     sequences,
@@ -52,15 +52,15 @@ def pad_full_sequence(
     batch_first: bool = False
 ) -> StreamTensor:
 
-    is_first = torch.full((len(sequences),), True, dtype=torch.bool)
-    is_last = torch.full((len(sequences),), True, dtype=torch.bool)
+    sos = torch.full((len(sequences),), True, dtype=torch.bool)
+    eos = torch.full((len(sequences),), True, dtype=torch.bool)
     
     return pad_chunks(
         sequences=sequences,
         names=names,
         ids=ids,
-        is_first=is_first,
-        is_last=is_last,
+        sos=sos,
+        eos=eos,
         batch_first=batch_first
     )
     
@@ -69,15 +69,15 @@ def pad_stream_tensor(
     batch_first: bool = False
 ) -> StreamTensor:
     
-    state = StreamState.cat_batch([t.stream_state for t in sequences])
+    meta = StreamMetadata.cat_batch([t.meta for t in sequences])
     names = sequences[0].names
     sequences = [t.tensor() for t in sequences]
     
     return pad_chunks(
         sequences=sequences,
         names=names,
-        ids=state.ids,
-        is_first=state.is_first,
-        is_last=state.is_last,
+        ids=meta.ids,
+        sos=meta.sos,
+        eos=meta.eos,
         batch_first=batch_first
     )
