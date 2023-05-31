@@ -94,7 +94,7 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
 def permute(tensor: StreamTensor, dims: List[int]):
     names = [tensor.names[dim] for dim in dims]
     meta = tensor.meta
-    tensor = tensor.named_tensor().permute(*dims)
+    tensor = tensor.tensor().permute(*dims)
     return StreamTensor(tensor, meta).rename(*names)
 
 
@@ -216,14 +216,15 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
         
         # Apply padding.
         if not meta.all_starting_and_ending:
-            applied_padding = meta.max_length - input.size(-1)        
-            if meta.all_starting:
-                assert applied_padding >= padding, "total padding should be greater than or equal to padding"
-                input = F.pad(input, (padding, applied_padding - padding))
-            elif applied_padding > 0:
-                input = F.pad(input, (0, applied_padding))
-                if meta.any_starting:
-                    input[meta.first] = torch.roll(input[meta.first], shifts=padding, dims=-1)
+            applied_padding = meta.max_length - input.size(-1)
+            if applied_padding > 0:
+                if meta.all_starting:
+                    assert applied_padding >= padding, "total padding should be greater than or equal to padding"
+                    input = F.pad(input, (padding, applied_padding - padding))
+                else:
+                    input = F.pad(input, (0, applied_padding))
+            if meta.any_starting and not meta.all_starting:
+                input[meta.sos] = torch.roll(input[meta.sos], shifts=padding, dims=-1)
             padding = 0     
     
     # Create buffer.

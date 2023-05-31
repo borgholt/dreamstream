@@ -592,6 +592,25 @@ class StreamTensor(torch.Tensor):
         if not keep_names:
             tensor.rename_(None)  # 2-3 µs
         return tensor
+    
+    def detach_stream(self) -> Tuple[torch.Tensor, StreamState, Tuple[str]]:
+        names = self.names
+        state = self.stream_state
+        tensor = self.tensor()
+        return tensor, state, names
+    
+    def drop_empty(self) -> Self:
+        """Remove empty tensors from the batch."""
+        if self.stream_state.min_length > 0:
+            return self
+        if self.stream_state.max_length == 0:
+            return None
+        if len(self.stream_state) == 1 and self.stream_state.max_length > 0:
+            return self
+        tensor, state, names = self.detach_stream()
+        batch_dim = names.index(BATCH)
+        tensor = torch.index_select(tensor, batch_dim, state.lengths.nonzero().squeeze())
+        return as_stream_tensor(data=tensor, state=state.drop_empty(), names=names)
 
     def named_tensor(self) -> torch.Tensor:
         """Return the underlying torch.Tensor with names."""
