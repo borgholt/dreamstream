@@ -4,7 +4,7 @@ import uuid
 import warnings
 
 from copy import deepcopy
-from typing import Any, Callable, List, Tuple, Union
+from typing import Any, Callable, List, Self, Tuple, Union
 
 import torch
 import numpy as np
@@ -70,8 +70,10 @@ class StreamMetadata:
         self._eos = eos
         self._lengths = lengths
 
-        self._lengths_updated = True
+        self._min_length = None
         self._max_length = None
+        self._lengths_updated = True
+        self._update_lengths()
 
         self._any_starting = None
         self._any_ending = None
@@ -110,16 +112,30 @@ class StreamMetadata:
         self._lengths_updated = True
 
     @property
+    def min_length(self):
+        """Return the minimum length of the batch and recompute only if lengths have been mutated."""
+        self._update_lengths()
+        return self._min_length
+
+    @min_length.setter
+    def min_length(self, length):
+        raise AttributeError("min_length is read-only.")
+
+    @property
     def max_length(self):
         """Return the maximum length of the batch and recompute only if lengths have been mutated."""
-        if self._lengths_updated:
-            self._max_length = self.lengths.max().item()
-            self._lengths_updated = False
+        self._update_lengths()
         return self._max_length
 
     @max_length.setter
     def max_length(self, length):
         raise AttributeError("max_length is read-only.")
+    
+    def _update_lengths(self):
+        if self._lengths_updated:
+            self._min_length = self.lengths.min().item()
+            self._max_length = self.lengths.max().item()
+            self._lengths_updated = False
 
     @property
     def starting_lengths(self) -> torch.IntTensor:
@@ -593,24 +609,18 @@ class StreamTensor(torch.Tensor):
             tensor.rename_(None)  # 2-3 µs
         return tensor
     
-    def detach_stream(self) -> Tuple[torch.Tensor, StreamState, Tuple[str]]:
-        names = self.names
-        state = self.stream_state
-        tensor = self.tensor()
-        return tensor, state, names
-    
     def drop_empty(self) -> Self:
         """Remove empty tensors from the batch."""
-        if self.stream_state.min_length > 0:
+        if self.meta.min_length > 0:
             return self
-        if self.stream_state.max_length == 0:
+        if self.meta.max_length == 0:
             return None
-        if len(self.stream_state) == 1 and self.stream_state.max_length > 0:
+        if len(self.meta) == 1 and self.meta.max_length > 0:
             return self
-        tensor, state, names = self.detach_stream()
+        tensor, meta, names = self.decouple()
         batch_dim = names.index(BATCH)
-        tensor = torch.index_select(tensor, batch_dim, state.lengths.nonzero().squeeze())
-        return as_stream_tensor(data=tensor, state=state.drop_empty(), names=names)
+        tensor = torch.index_select(tensor, batch_dim, meta.lengths.nonzero().squeeze())
+        return as_stream_tensor(data=tensor, meta=meta.drop_empty(), names=names)
 
     def named_tensor(self) -> torch.Tensor:
         """Return the underlying torch.Tensor with names."""
