@@ -1,9 +1,11 @@
 from random import randint
 from uuid import uuid4
+from copy import deepcopy
 
 import torch
 from torch import nn
 
+from dreamstream import stream_tensor
 from dreamstream.utils.flags import BATCH, LENGTH
 from dreamstream.nn.utils import pad_full_sequence
 from dreamstream.patches import patch_conv_1d
@@ -13,7 +15,7 @@ def random_chunks(full_length):
     chunks = []
     chunk_sum, remaining = 0, full_length
     while remaining > 0:
-        chunks.append(min(randint(0, 200), remaining))
+        chunks.append(min(randint(7, 200), remaining))
         chunk_sum = sum(chunks)
         remaining = full_length - chunk_sum
     return chunks
@@ -31,13 +33,11 @@ chunks = random_chunks(batch.size("L"))
 stream_output = OutputCollector()
 conv.online()
 for x in batch.split(chunks, dim=2):
-    names = x.names
-    x.rename_(None)
-    x = x[x.stream_state.lengths > 0]
-    x.rename_(*names)
-    x.stream_state.drop_empty()
-    assert x.size(0) == len(x.stream_state)
-    y = conv(x)
+    x = x.drop_empty()
+    try:
+        y = conv(x)
+    except:
+        import IPython; IPython.embed(using=False)
     stream_output.update(y)
     
 for _id, _y in targets.items():

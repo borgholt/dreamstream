@@ -17,6 +17,7 @@ from dreamstream.utils.flags import BATCH, LENGTH
 STREAM_TENSOR_FUNCTIONS = dict()
 
 
+
 # TODO (JDH): Make StreamState methods like cat, split and index lazily evaluated such that they only evaluate when they
 # are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the computation graph.
 
@@ -63,8 +64,10 @@ class StreamState:
         self._is_last = is_last
         self._lengths = lengths
         
+        self._max_length = None
+        self._min_length = None
         self._lengths_updated = True
-        self._max_lengths = None
+        self._update_min_max_length()
         
         self._any_first = None
         self._any_last = None
@@ -190,6 +193,13 @@ class StreamState:
             self._any_first_or_last = self._any_first or self._any_last
             self._all_first_and_last = self._all_first and self._all_last
             self._first_last_updated = False
+            
+    def _update_min_max_length(self):
+        if self._lengths_updated:
+            self._max_length = self.lengths.max().item()
+            self._min_length = self.lengths.min().item()
+            self._lengths_updated = False
+        
     
     @property
     def any_first(self):
@@ -256,10 +266,14 @@ class StreamState:
     @property
     def max_length(self):
         """Return the maximum length of the batch and recompute only if lengths have been mutated."""
-        if self._lengths_updated:
-            self._max_length = self.lengths.max().item()
-            self._lengths_updated = False
+        self._update_min_max_length()
         return self._max_length
+    
+    @property
+    def min_length(self):
+        """Return the maximum length of the batch and recompute only if lengths have been mutated."""
+        self._update_min_max_length()
+        return self._min_length
 
     @property
     def _first_lengths(self):
@@ -278,6 +292,10 @@ class StreamState:
     def max_length(self, i):
         raise AttributeError("max_length is read-only.")
     
+    @min_length.setter
+    def min_length(self, i):
+        raise AttributeError("min_length is read-only.")
+    
     @_first_lengths.setter
     def _first_lengths(self, i):
         self._lengths[self.is_first] = i
@@ -293,12 +311,15 @@ class StreamState:
 
     def drop_empty(self) -> Self:
         """Drop any tensors that are empty."""
-        self.filter(self.lengths > 0)  # TODO (JDH): Replace with index_batch
+        return self.index_batch(self.lengths > 0)
 
-    def filter(self, indics: Union[int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]) -> Self:
-        """Filter this StreamState inplace keeping only the batch examples at the given indices."""
-        self = self.index_batch(indics)
-        return self
+    # def filter(self, mask: torch.BoolTensor):
+    #     """Keep only the batch examples where the mask is True."""
+    #     if not mask.all():
+    #         self.is_first = self.is_first[mask]
+    #         self.is_last = self.is_last[mask]
+    #         self.lengths = self.lengths[mask]
+    #         self.ids = [id for i, id in enumerate(self.ids) if mask[i]]
 
     def __repr__(self):
         return f"StreamState(size={self.size()})"
@@ -488,12 +509,12 @@ class StreamTensor(torch.Tensor):
         # TODO (JDH): Deal with empty StreamTensors?
         # import IPython
         # IPython.embed(using=False, header="Hello from StreamTensor.__torch_function__")
-
+        print("TEST", func.__name__)
         if kwargs is None:
             kwargs = dict()
 
         is_handled = func in STREAM_TENSOR_FUNCTIONS and all(issubclass(t, (torch.Tensor, StreamTensor)) for t in types)
-        # print(f"\n\n{func.__name__}: {is_handled=}\n\n")
+        print(f"\n\n{func.__name__}: {is_handled=}\n\n")
 
         if is_handled:
             return STREAM_TENSOR_FUNCTIONS[func](*args, **kwargs)
@@ -556,6 +577,25 @@ class StreamTensor(torch.Tensor):
         if not keep_names:
             tensor.rename_(None)
         return tensor
+    
+    def detach_stream(self) -> Tuple[torch.Tensor, StreamState, Tuple[str]]:
+        names = self.names
+        state = self.stream_state
+        tensor = self.tensor()
+        return tensor, state, names
+    
+    def drop_empty(self) -> Self:
+        """Remove empty tensors from the batch."""
+        if self.stream_state.min_length > 0:
+            return self
+        if self.stream_state.max_length == 0:
+            return None
+        if len(self.stream_state) == 1 and self.stream_state.max_length > 0:
+            return self
+        tensor, state, names = self.detach_stream()
+        batch_dim = names.index(BATCH)
+        tensor = torch.index_select(tensor, batch_dim, state.lengths.nonzero().squeeze())
+        return as_stream_tensor(data=tensor, state=state.drop_empty(), names=names)
 
     def named_tensor(self) -> torch.Tensor:
         """Return the underlying torch.Tensor with names."""

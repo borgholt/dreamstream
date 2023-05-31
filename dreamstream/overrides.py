@@ -10,6 +10,8 @@ from dreamstream.tensor import StreamTensor, StreamState, STREAM_TENSOR_FUNCTION
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
+
+
 def all_stream_tensors(tensors: List[Union[StreamTensor, Tensor]]) -> bool:
     """Return True if all tensors are StreamTensors."""
     return all(isinstance(t, StreamTensor) for t in tensors)
@@ -82,7 +84,7 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
 def permute(tensor: StreamTensor, dims: List[int]):
     names = [tensor.names[dim] for dim in dims]
     state = tensor.stream_state
-    tensor = tensor.named_tensor().permute(*dims)
+    tensor = tensor.tensor().permute(*dims)
     return StreamTensor(tensor, state).rename(*names)
 
 
@@ -206,14 +208,15 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
         
         # Apply padding.
         if not state.all_first_and_last:
-            applied_padding = state.max_length - input.size(-1)        
-            if state.all_first:
-                assert applied_padding >= padding, "total padding should be greater than or equal to padding"
-                input = F.pad(input, (padding, applied_padding - padding))
-            elif applied_padding > 0:
-                input = F.pad(input, (0, applied_padding))
-                if state.any_first:
-                    input[state.first] = torch.roll(input[state.first], shifts=padding, dims=-1)
+            applied_padding = state.max_length - input.size(-1)
+            if applied_padding > 0:
+                if state.all_first:
+                    assert applied_padding >= padding, "total padding should be greater than or equal to padding"
+                    input = F.pad(input, (padding, applied_padding - padding))
+                else:
+                    input = F.pad(input, (0, applied_padding))
+            if state.any_first and not state.all_first:
+                input[state.is_first] = torch.roll(input[state.is_first], shifts=padding, dims=-1)
             padding = 0     
     
     # Create buffer.
@@ -325,50 +328,50 @@ def determine_dims_affected_by_indexing(tensor: StreamTensor, indices: Union[Non
     raise NotImplementedError(msg)
     
 
-@implements(torch.Tensor.__getitem__)
-def __getitem__(self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]) -> StreamTensor:
+# @implements(torch.Tensor.__getitem__)
+# def __getitem__(self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]) -> StreamTensor:
 
-    stream_state = self.stream_state
-    tensor = self.tensor().rename(None)
-    indexed_tensor = tensor[indices]
+#     stream_state = self.stream_state
+#     tensor = self.tensor().rename(None)
+#     indexed_tensor = tensor[indices]
 
-    dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
+#     dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
 
-    if new_names:
-        indexed_tensor = indexed_tensor.refine_names(*new_names)
-    else:
-        indexed_tensor = indexed_tensor.rename(*self.names)
+#     if new_names:
+#         indexed_tensor = indexed_tensor.refine_names(*new_names)
+#     else:
+#         indexed_tensor = indexed_tensor.rename(*self.names)
 
-    batch_dim = self.batch_dim
-    length_dim = self.length_dim
-    any_is_batch_dim = any([dim == batch_dim for dim in dims_affected])
-    any_is_length_dim = any([dim == length_dim for dim in dims_affected])
-    # import IPython
-    # IPython.embed(using=False)
+#     batch_dim = self.batch_dim
+#     length_dim = self.length_dim
+#     any_is_batch_dim = any([dim == batch_dim for dim in dims_affected])
+#     any_is_length_dim = any([dim == length_dim for dim in dims_affected])
+#     # import IPython
+#     # IPython.embed(using=False)
 
-    if any_is_batch_dim or any_is_length_dim:
-        if any_index_is_multidimensional_tensor(indices):
-            msg = "Indexing with a >1D tensor that affects the batch or length dimensions is not supported."
-            raise NotImplementedError(msg)
+#     if any_is_batch_dim or any_is_length_dim:
+#         if any_index_is_multidimensional_tensor(indices):
+#             msg = "Indexing with a >1D tensor that affects the batch or length dimensions is not supported."
+#             raise NotImplementedError(msg)
 
-        # TODO (JDH): Handle simultaneous indexing along the batch and length dimensions.
-        # e.g.
-        # >>> stream_state[index]
-        # where index is Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]] and indexes batch or length or both
-        if any_is_length_dim:
-            # Get the index that was used along the length dimension of the tensor.
-            index = indices[length_dim] if is_multidimensional_indexing(indices) else indices
-            stream_state = stream_state.index_length(index)
+#         # TODO (JDH): Handle simultaneous indexing along the batch and length dimensions.
+#         # e.g.
+#         # >>> stream_state[index]
+#         # where index is Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]] and indexes batch or length or both
+#         if any_is_length_dim:
+#             # Get the index that was used along the length dimension of the tensor.
+#             index = indices[length_dim] if is_multidimensional_indexing(indices) else indices
+#             stream_state = stream_state.index_length(index)
 
-        if any_is_batch_dim:
-            # Get the index that was used along the batch dimension of the tensor.
-            index = indices[batch_dim] if is_multidimensional_indexing(indices) else indices
-            stream_state = stream_state.index_batch(index)
-    else:
-        stream_state = stream_state.clone()
+#         if any_is_batch_dim:
+#             # Get the index that was used along the batch dimension of the tensor.
+#             index = indices[batch_dim] if is_multidimensional_indexing(indices) else indices
+#             stream_state = stream_state.index_batch(index)
+#     else:
+#         stream_state = stream_state.clone()
 
-    stream_tensor = StreamTensor(indexed_tensor, stream_state)
-    return stream_tensor
+#     stream_tensor = StreamTensor(indexed_tensor, stream_state)
+#     return stream_tensor
 
 
 # @implements(torch.stack)

@@ -9,6 +9,7 @@ from dreamstream.tensor import StreamTensor, StreamState
 from dreamstream.patches.general import online, offline
 from dreamstream.nn.utils import pad_stream_tensor
 
+#TODO: Add support for subsampling convolutions (i.e., stride > kernel_width).
 
 def conv_1d_pre_hook(self, inputs):
     
@@ -35,10 +36,9 @@ def conv_1d_pre_hook(self, inputs):
         # If not, split batch into individual inputs and concatenate separately first.
         else:
             # TODO: This needs to be tested.
-            import IPython; IPython.embed(using=False, banner1="conv_1d_pre_hook")
             input = input.unpad_sequence()
             input = [a if b is None else torch.cat([b, a], dim=-1) for a, b in zip(input, buffer_data)]
-            input = pad_stream_tensor(input).transpose(1, 2)
+            input = pad_stream_tensor(input).permute(1, 2, 0)
 
     return input
 
