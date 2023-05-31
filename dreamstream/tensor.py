@@ -1,24 +1,35 @@
 import functools
-import uuid
 import itertools
+import uuid
+import warnings
 
 from copy import deepcopy
-from typing import Any, Callable, List, Self, Tuple, Sequence, Optional, Union
+from typing import Any, Callable, List, Tuple, Union
 
 import torch
 import numpy as np
 
 from torch import Tensor
-from torch.nn.utils.rnn import pad_sequence
 
+from dreamstream.func_coverage import DECOUPLE_FUNCTIONS, RECOUPLE_FUNCTIONS, VALID_FUNCTIONS, OVERRIDDEN_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
-
-
-STREAM_TENSOR_FUNCTIONS = dict()
 
 
 # TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when they
 # are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the computation graph.
+
+
+def decouple(func, tensor, *args, **kwargs):
+    """Call function on tensor after decoupling it from StreamMetadata."""
+    return func(tensor.tensor(), *args, **kwargs)
+
+
+def recouple(func, tensor, *args, **kwargs):
+    """Call function on tensor after recoupling it to StreamMetadata and recouple again afterwards."""
+    tensor, meta, names = tensor.decouple()
+    tensor = func(tensor, *args, **kwargs)
+    tensor.rename_(names)
+    return as_stream_tensor(data=tensor, meta=meta, names=names)
 
 
 class StreamMetadata:
@@ -483,85 +494,83 @@ def stream_metadata(
 
 class StreamTensor(torch.Tensor):
     @staticmethod
-    def __new__(cls, data, meta: StreamMetadata, *args, **kwargs) -> torch.Tensor:
+    def __new__(cls, data, meta: StreamMetadata, *args, **kwargs) -> "StreamTensor":
         """Return a new StreamTensor object."""
-        # print(f"Hello from StreamTensor.__new__ with {cls=} {data=} {meta=}")
-        return super().__new__(cls, data, *args, **kwargs)  # call torch.Tensor.__new__
+        return super().__new__(cls, data, *args, **kwargs)
 
     def __init__(self, data, meta: StreamMetadata, *args, names: List[str] = None, **kwargs):
         """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
         super().__init__()
-        self._meta = meta
-        # print(f"Hello from StreamTensor.__init__ with {self=} {data=} {meta=} {names=}")
+        self.meta = meta
 
     @classmethod
     def __torch_function__(cls, func: Callable, types: List[torch.Tensor], args=(), kwargs=None):
+        """Custom __torch_function__ implementation for StreamTensor.
+
+        Args:
+            func (Callable): The intercepted torch function.
+            types (List[torch.Tensor]): Types of any Tensor-like arguments.
+            args (tuple, optional): Arguments to the intercepted torch function. Defaults to ().
+            kwargs (_type_, optional): Key-word arguments to the intercepted torch function. Defaults to None.
+
+        Raises:
+            RuntimeError: If the intercepted function could not be handled safely.
+        """
         if kwargs is None:
             kwargs = dict()
 
-        is_handled = func in STREAM_TENSOR_FUNCTIONS and all(issubclass(t, (torch.Tensor, StreamTensor)) for t in types)
+        if func in OVERRIDDEN_FUNCTIONS:
+            # print(f"\n\n{func.__name__}: STREAM_TENSOR_FUNCTIONS\n\n")
+            return OVERRIDDEN_FUNCTIONS[func](*args, **kwargs)
 
-        # TODO (JDH): Deal with empty StreamTensors?
-        # import IPython
-        # IPython.embed(using=False, header="Hello from StreamTensor.__torch_function__")
-        # print(f"\n\n{func.__name__}: {is_handled=}\n\n")
+        if func in RECOUPLE_FUNCTIONS:
+            # print(f"\n\n{func.__name__}: RECOUPLE_FUNCTIONS\n\n")
+            return recouple(func, *args, **kwargs)
 
-        if is_handled:
-            return STREAM_TENSOR_FUNCTIONS[func](*args, **kwargs)
-        
-        # TODO (JDH): Handle other types of functions
-        # - those that work with named tensors
+        if func in DECOUPLE_FUNCTIONS:
+            # print(f"\n\n{func.__name__}: DECOUPLE_FUNCTIONS\n\n")
+            return decouple(func, *args, **kwargs)
+
+        if func in VALID_FUNCTIONS:
+            # print(f"\n\n{func.__name__}: VALID_FUNCTIONS\n\n")
+            return super().__torch_function__(func, types, args, kwargs)
 
         # Unhandled functions are passed to the torch.Tensor.__torch_function__ method.
+        warnings.warn(
+            f"Function {func.__name__} is not handled by StreamTensor.__torch_function__ and may not work as expected."
+        )
         out = super().__torch_function__(func, types, args, kwargs)
-        
+
         metas = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]
-        meta = metas[0]
-        if not all(s == meta for s in metas[1:]):
+        if not all(s == metas[0] for s in metas[1:]):
             msg = (
                 f"Called a torch function ({func.__name__}) which was not handled by "
                 f"StreamTensor.__torch_function__ with {len(metas)} StreamTensors in the input."
-                f"In this case the function can only be handled if the StreamTensors had equal metadata."
-                f"but they were not."
+                f"In this case the function can only be handled if the StreamTensors have equal metadata,"
+                f"but they were not equal."
             )
             raise RuntimeError(msg)
 
-
-        # if isinstance(out, torch.Tensor):
-        #     metas = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]
-        #     out = StreamTensor(out, meta=metas[0])
+        if isinstance(out, torch.Tensor):
+            return StreamTensor(out, meta=metas[0])
 
         return out
 
-    def set_empty(self):
-        self.meta.set_empty()
-        self.data = None
+    @property
+    def has_batch_dim(self) -> bool:
+        return BATCH in self.names
 
     @property
-    def is_empty(self) -> bool:
-        return self.size(LENGTH) == 0
+    def has_length_dim(self) -> bool:
+        return LENGTH in self.names
 
     @property
-    def meta(self) -> StreamMetadata:
-        return self._meta
-
-    @meta.setter
-    def meta(self, s: StreamMetadata):
-        self._meta = s
+    def batch_dim(self) -> int:
+        return self.names.index(BATCH)
 
     @property
-    def batch_dim(self) -> Union[int, None]:
-        try:
-            return self.names.index(BATCH)
-        except ValueError:
-            return None
-
-    @property
-    def length_dim(self) -> Union[int, None]:
-        try:
-            return self.names.index(LENGTH)
-        except ValueError:
-            return None
+    def length_dim(self) -> int:
+        return self.names.index(LENGTH)
 
     def is_batch_dim(self, dim: int) -> bool:
         return self.names[dim] == BATCH
@@ -579,16 +588,16 @@ class StreamTensor(torch.Tensor):
 
     def tensor(self, keep_names: bool = False) -> torch.Tensor:
         """Return the underlying torch.Tensor."""
-        tensor = torch.Tensor(self)
+        tensor = torch.Tensor(self)  # 1-2 µs
         if not keep_names:
-            tensor.rename_(None)
+            tensor.rename_(None)  # 2-3 µs
         return tensor
 
     def named_tensor(self) -> torch.Tensor:
         """Return the underlying torch.Tensor with names."""
         return self.tensor(keep_names=True)
 
-    def unpad_sequence(self, keep_names: bool = False) -> "StreamTensor":
+    def unpad_sequence(self, keep_names: bool = False) -> List["StreamTensor"]:
         """Remove padding along the specified dimension."""
         batch_dim = self.names.index(BATCH)
         length_dim = self.names.index(LENGTH)
@@ -599,15 +608,10 @@ class StreamTensor(torch.Tensor):
             for x in self.unbind(dim=batch_dim)
         ]
 
-    def iter_chunks(self):
-        """Return an iterator over chunks of the tensor."""
-        # TODO (LB): Implement this.
-        raise NotImplementedError()
-
-    def to_chunks(self):
-        """Return a list of chunks of the tensor."""
-        # TODO (LB): Implement this. Should return a ChunkedList object.
-        raise NotImplementedError()
+    def decouple(self, copy_meta: bool = False) -> Tuple[Tensor, StreamMetadata, Tuple[str]]:
+        """Decouple the StreamTensor from names and metadata."""
+        meta = self.meta.clone() if copy_meta else self.meta
+        return self.tensor(), meta, self.names
 
 
 def as_stream_tensor(

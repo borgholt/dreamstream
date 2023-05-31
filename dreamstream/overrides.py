@@ -6,7 +6,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from dreamstream.tensor import StreamTensor, StreamMetadata, STREAM_TENSOR_FUNCTIONS
+from dreamstream.tensor import StreamTensor, StreamMetadata, as_stream_tensor
+from dreamstream.func_coverage import OVERRIDDEN_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
@@ -38,7 +39,7 @@ def implements(torch_function):
     def decorator(func):
         functools.update_wrapper(func, torch_function, assigned=WRAPPER_ASSIGNMENTS)
         func.__doc__ = augment_documentation(func.__doc__, torch_function.__doc__)
-        STREAM_TENSOR_FUNCTIONS[torch_function] = func
+        OVERRIDDEN_FUNCTIONS[torch_function] = func
         return func
 
     return decorator
@@ -202,9 +203,7 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
     
     # Compute kernel width and detach metadata and names. 
     kernel_width = weight.shape[2] + (weight.shape[2] - 1) * (dilation[0] - 1)
-    meta = input.meta
-    names = input.names
-    input = input.tensor()
+    input, meta, names = input.decouple()
     
     if padding > 0:
         
@@ -402,12 +401,21 @@ def __getitem__(self: StreamTensor, indices: Union[None, int, slice, Tensor, Lis
 # @implements(torch.nn.utils.rnn.unpad_sequence)
 
 # reduction methods
-# @implements(torch.sum)  # Fail if batch or length dim was removed? Maybe not.
+# @implements(torch.max)
+# @implements(torch.min)
+# @implements(torch.sum)
 # @implements(torch.mean)
+# @implements(torch.median)
+# @implements(torch.mode)
 # @implements(torch.std)
 # @implements(torch.var)
-# @implements(torch.median)
+# @implements(torch.prod)
+# @implements(torch.norm)
+
+# comparison methods
+# @implements(torch.sort)
 # @implements(torch.topk)
+# @implements(torch.unique)
 
 # indexing, slicing, joining, mutating methods
 # @implements(torch.index)

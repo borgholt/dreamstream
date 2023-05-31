@@ -1,10 +1,12 @@
 import pytest
+import inspect
 
 import torch
 
 import dreamstream.overrides  # TODO (JDH): Tests will fail if we don't also import this, since nothing gets overridden.
 
-from dreamstream.tensor import StreamTensor, StreamMetadata, stream_tensor, as_stream_tensor, stream_metadata, LENGTH, BATCH
+from dreamstream.tensor import OVERRIDDEN_FUNCTIONS, StreamTensor, StreamMetadata, stream_tensor, as_stream_tensor, stream_metadata, LENGTH, BATCH
+from dreamstream.func_coverage import FLAT_OVERRIDABLE_FUNCTIONS, VALID_FUNCTIONS, UNSUPPORTED_FUNCTIONS
 
 
 @pytest.fixture()
@@ -13,6 +15,8 @@ def stream_tensor_3d():
     tensor = stream_tensor([[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]], [[13, 14, 15], [16, 17, 18]]], meta, names=(BATCH, "F", LENGTH))
     return tensor
 
+
+## Instantiation
 
 @pytest.mark.parametrize("data", [
     [[1, 2, 3], [4, 5, 6]], # list
@@ -29,6 +33,50 @@ def test_instantiate_stream_tensor(data):
     assert tensor.names == (BATCH, LENGTH)
     assert torch.equal(tensor.tensor().rename(None), torch.tensor(data).rename(None))
 
+
+## Valid functions
+
+def test_valid_functions(stream_tensor_3d):
+    failed = []
+    for f in VALID_FUNCTIONS:
+        try:
+            # kwargs = inspect.signature(f).parameters.keys()
+            f(stream_tensor_3d)
+        except Exception as e:
+            failed.append((f, e))
+
+    if any(failed):
+        failed_str = "\n".join([f"{f.__name__}: {e}" for f, e in failed])
+        raise AssertionError(f"The following functions claimed to be valid, were not:\n{failed_str}")
+
+
+def test_invalid_functions(stream_tensor_3d):
+    failed = []
+    for f in UNSUPPORTED_FUNCTIONS:
+        try:
+            f(stream_tensor_3d)
+        except Exception as e:
+            failed.append((f, e))
+
+    if not all(failed):
+        failed_str = "\n".join([f"{f.__name__}: {e}" for f, e in failed])
+        raise AssertionError(f"The following functions claimed to be invalid, were not:\n{failed_str}")
+    
+
+def test_function_coverage():
+    """Test that we have covered all functions in torch.nn.functional."""
+    num_overridden = len(OVERRIDDEN_FUNCTIONS)
+    num_valid = len(VALID_FUNCTIONS)
+    num_invalid = len(UNSUPPORTED_FUNCTIONS)
+    num_total = num_overridden + num_valid + num_invalid
+
+    fraction_working = (num_overridden + num_valid) / num_total
+
+    assert num_total == FLAT_OVERRIDABLE_FUNCTIONS
+    assert fraction_working > 0.8, f"Only {fraction_working*100:.1f} % of functions are covered (req >80%)."
+
+
+## Indexing
 
 def test_feature_indexing_integer(stream_tensor_3d):
     """Indexing with an integer on the feature dim should remove the feature dim but not change the meta."""
