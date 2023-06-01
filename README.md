@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="65%" src="dreamstream-logo.png">
+  <img width="65%" src="torchstream-logo.png">
 </p>
 <br />
 
