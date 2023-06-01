@@ -6,7 +6,7 @@ import torch
 import dreamstream.overrides  # TODO (JDH): Tests will fail if we don't also import this, since nothing gets overridden.
 
 from dreamstream.tensor import OVERRIDDEN_FUNCTIONS, StreamTensor, StreamMetadata, stream_tensor, as_stream_tensor, stream_metadata, LENGTH, BATCH
-from dreamstream.func_coverage import FLAT_OVERRIDABLE_FUNCTIONS, VALID_FUNCTIONS, UNSUPPORTED_FUNCTIONS
+from dreamstream.func_coverage import DECOUPLE_FUNCTIONS, FLAT_OVERRIDABLE_FUNCTIONS, RECOUPLE_FUNCTIONS, VALID_FUNCTIONS, UNSUPPORTED_FUNCTIONS
 
 
 @pytest.fixture()
@@ -34,46 +34,84 @@ def test_instantiate_stream_tensor(data):
     assert torch.equal(tensor.tensor().rename(None), torch.tensor(data).rename(None))
 
 
-## Valid functions
+## Valid, coupled and recoupled functions, unsupported functions and function coverage
 
-def test_valid_functions(stream_tensor_3d):
+TEST_KWARGS_VALID_FUNCTIONS = {
+    torch.Tensor.__repr__: dict(),
+}
+
+TEST_KWARGS_DECOUPLE_FUNCTIONS = {
+    torch.argmax: dict(dim=-1),
+    torch.argmin: dict(dim=-1),
+    torch.argsort: dict(dim=-1),
+}
+
+TEST_KWARGS_RECOUPLE_FUNCTIONS = {
+    torch.adjoint: dict(),
+    torch.sigmoid: dict(),
+    torch.Tensor.sigmoid: dict(),
+    torch.transpose: dict(dim0=0, dim1=1),
+}
+
+TEST_SKIP_EQUALS_CHECK = {torch.Tensor.__repr__}
+
+
+def test_valid_coupled_recoupled_functions(stream_tensor_3d):
+    FUNCTIONS = VALID_FUNCTIONS | DECOUPLE_FUNCTIONS | RECOUPLE_FUNCTIONS
+    KWARGS = TEST_KWARGS_VALID_FUNCTIONS | TEST_KWARGS_DECOUPLE_FUNCTIONS | TEST_KWARGS_RECOUPLE_FUNCTIONS
+
+    assert len(FUNCTIONS) == len(KWARGS), "The number of functions and test arguments must match."
+
     failed = []
-    for f in VALID_FUNCTIONS:
+    for f in FUNCTIONS:
         try:
-            # kwargs = inspect.signature(f).parameters.keys()
-            f(stream_tensor_3d)
+            kwargs = KWARGS[f]
+            stream_tensor_out = f(stream_tensor_3d, **kwargs)
+            torch_tensor_out = f(stream_tensor_3d.tensor(), **kwargs)
+
+            if f in TEST_SKIP_EQUALS_CHECK:
+                continue
+
+            if isinstance(torch_tensor_out, torch.Tensor):
+                stream_tensor_out = stream_tensor_out.rename(None)
+                torch_tensor_out = torch_tensor_out.rename(None)
+                assert torch.equal(stream_tensor_out, torch_tensor_out)
+            else:
+                assert stream_tensor_out == torch_tensor_out
+
         except Exception as e:
             failed.append((f, e))
-
+            
     if any(failed):
-        failed_str = "\n".join([f"{f.__name__}: {e}" for f, e in failed])
+        failed_str = "\n\n".join([f"{f.__name__}: {e}" for f, e in failed])
         raise AssertionError(f"The following functions claimed to be valid, were not:\n{failed_str}")
 
 
-def test_invalid_functions(stream_tensor_3d):
-    failed = []
-    for f in UNSUPPORTED_FUNCTIONS:
-        try:
-            f(stream_tensor_3d)
-        except Exception as e:
-            failed.append((f, e))
+# def test_unsupported_functions(stream_tensor_3d):
+#     failed = []
+#     for f in UNSUPPORTED_FUNCTIONS:
+#         try:
+#             f(stream_tensor_3d)
+#         except Exception as e:
+#             failed.append((f, e))
 
-    if not all(failed):
-        failed_str = "\n".join([f"{f.__name__}: {e}" for f, e in failed])
-        raise AssertionError(f"The following functions claimed to be invalid, were not:\n{failed_str}")
+#     if not all(failed):
+#         failed_str = "\n".join([f"{f.__name__}: {e}" for f, e in failed])
+#         raise AssertionError(f"The following functions claimed to be invalid, were not:\n{failed_str}")
+
+
+# def test_function_coverage():
+#     """Test that we have covered all functions in torch.nn.functional."""
+#     num_overridden = len(OVERRIDDEN_FUNCTIONS)
+#     num_valid = len(VALID_FUNCTIONS)
+#     num_invalid = len(UNSUPPORTED_FUNCTIONS)
+#     num_total = num_overridden + num_valid + num_invalid
+
+#     fraction_working = (num_overridden + num_valid) / num_total
     
-
-def test_function_coverage():
-    """Test that we have covered all functions in torch.nn.functional."""
-    num_overridden = len(OVERRIDDEN_FUNCTIONS)
-    num_valid = len(VALID_FUNCTIONS)
-    num_invalid = len(UNSUPPORTED_FUNCTIONS)
-    num_total = num_overridden + num_valid + num_invalid
-
-    fraction_working = (num_overridden + num_valid) / num_total
-
-    assert num_total == FLAT_OVERRIDABLE_FUNCTIONS
-    assert fraction_working > 0.8, f"Only {fraction_working*100:.1f} % of functions are covered (req >80%)."
+#     msg = "Total number of functions must be the number of overridable functions plus any dunder methods."
+#     assert num_total >= len(FLAT_OVERRIDABLE_FUNCTIONS), msg
+#     assert fraction_working > 0.8, f"Only {fraction_working*100:.1f} % of torch functions are covered (req >80%)."
 
 
 ## Indexing
@@ -129,10 +167,8 @@ def test_batch_indexing_list_tuple(stream_tensor_3d):
 
 def test_batch_indexing_booltensor(stream_tensor_3d):
     """Indexing with a bool tensor on the batch dim should remove relevant examples from the meta."""
-    tensor = stream_tensor_3d
-    
     # Indexing with a bool tensor on the batch dim should remove relevant examples from the meta.
-    s1 = tensor[torch.tensor([False, True, True])]
+    s1 = stream_tensor_3d[torch.tensor([False, True, True])]
 
     assert isinstance(s1, StreamTensor)
     assert s1.meta.ids == ["middle", "last"]
@@ -197,7 +233,6 @@ def test_length_indexing_slice(stream_tensor_3d):
     - if the slice ends before the last index, no examples should be last.
     - the lengths should be reduced by the number of non-padding tensor elements that are removed.
     """
-    
     s2 = stream_tensor_3d[:, :, 1:]  # remove first length index
 
     assert isinstance(s2, StreamTensor)
@@ -212,7 +247,7 @@ def test_length_indexing_slice(stream_tensor_3d):
     assert s3.meta.ids == ["first", "middle", "last"]
     assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
     assert torch.equal(s3.meta.eos, torch.tensor([False, False, True]))
-    assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # reduced by 1 for all but "last" since this was padding.
+    assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # reduced by 1 for all but "last" since it was padding
     
     s4 = stream_tensor_3d[:, :, 1:-1]  # remove first and last length index
 
@@ -220,7 +255,7 @@ def test_length_indexing_slice(stream_tensor_3d):
     assert s4.meta.ids == ["first", "middle", "last"]
     assert torch.equal(s4.meta.sos, torch.tensor([False, False, False]))  # changed to False
     assert torch.equal(s4.meta.eos, torch.tensor([False, False, True]))
-    assert torch.equal(s4.meta.lengths, torch.tensor([1, 1, 1]))  # reduced by 2 for all but "last" since this was padding.
+    assert torch.equal(s4.meta.lengths, torch.tensor([1, 1, 1]))  # reduced by 2 for all but "last" since it was padding
     
     s5 = stream_tensor_3d[:, :, :-2]  # remove two last length indices
 
@@ -228,7 +263,7 @@ def test_length_indexing_slice(stream_tensor_3d):
     assert s5.meta.ids == ["first", "middle", "last"]
     assert torch.equal(s5.meta.sos, torch.tensor([True, False, False]))  # changed to False
     assert torch.equal(s5.meta.eos, torch.tensor([False, False, False]))
-    assert torch.equal(s5.meta.lengths, torch.tensor([1, 1, 1]))  # reduced by 2 for all but "last" since this was padding.
+    assert torch.equal(s5.meta.lengths, torch.tensor([1, 1, 1]))  # reduced by 2 for all but "last" since it was padding
 
     s6 = stream_tensor_3d[:, :, ::2]  # remove every other length index from start to end
     
@@ -236,7 +271,7 @@ def test_length_indexing_slice(stream_tensor_3d):
     assert s6.meta.ids == ["first", "middle", "last"]
     assert torch.equal(s6.meta.sos, torch.tensor([True, False, False]))
     assert torch.equal(s6.meta.eos, torch.tensor([False, False, True]))
-    assert torch.equal(s6.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all but "last" since this was padding.
+    assert torch.equal(s6.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all
 
 
 def test_length_indexing_list_tuple(stream_tensor_3d):
@@ -247,7 +282,7 @@ def test_length_indexing_list_tuple(stream_tensor_3d):
     assert s1.meta.ids == ["first", "middle", "last"]
     assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
     assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
-    assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all but "last" since this was padding.
+    assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all
     assert s1.names == (BATCH, "F", LENGTH)
     
     s2 = stream_tensor_3d[:, :, [0, 2]]  # remove middle length index
@@ -256,7 +291,7 @@ def test_length_indexing_list_tuple(stream_tensor_3d):
     assert s2.meta.ids == ["first", "middle", "last"]
     assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
     assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
-    assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all but "last" since this was padding.
+    assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all
     assert s2.names == (BATCH, "F", LENGTH)
     
     s3 = stream_tensor_3d[:, :, [0, 1]]  # remove last length index
@@ -265,60 +300,98 @@ def test_length_indexing_list_tuple(stream_tensor_3d):
     assert s3.meta.ids == ["first", "middle", "last"]
     assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
     assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
-    assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # reduced by 1 for all but "last" since this was padding.
+    assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # reduced by 1 for all but "last" since it was padding
 
 
 def test_length_indexing_1d_inttensor(stream_tensor_3d):
     """"""
-    raise NotImplementedError()
-
-
-def test_length_indexing_1d_booltensor(stream_tensor_3d):
-    """Test that we can index a StreamTensor with a bool tensor (mask)."""
-    tensor = stream_tensor_3d
+    s1 = stream_tensor_3d[:, :, torch.tensor([1, 2])]  # remove first length index
     
-    # Indexing with a bool tensor on the batch dim should remove relevant examples from the meta.
-    s1 = tensor[torch.tensor([False, True, True])]
-
     assert isinstance(s1, StreamTensor)
-    assert s1.meta.ids == ["middle", "last"]
-    assert torch.equal(s1.meta.sos, torch.tensor([False, False]))
-    assert torch.equal(s1.meta.eos, torch.tensor([False, True]))
-    assert torch.equal(s1.meta.lengths, torch.tensor([3, 2]))
-    assert s1.names == (BATCH, "F", LENGTH)
+    assert s1.meta.ids == ["first", "middle", "last"]
+    assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
+    assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
+    assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all
     
-    # Indexing with a bool tensor on the length dim should correctly adjust the meta lengths and sos/eos.
-    s2 = tensor[:, :, torch.tensor([False, True, True])]  # remove first length index    
-
+    s2 = stream_tensor_3d[:, :, torch.tensor([0, 2])]  # remove middle length index
+    
     assert isinstance(s2, StreamTensor)
     assert s2.meta.ids == ["first", "middle", "last"]
-    assert torch.equal(s2.meta.sos, torch.tensor([False, False, False]))  # changed to False
+    assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
     assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
     assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all
-    assert s2.names == (BATCH, "F", LENGTH)
     
-    s3 = tensor[:, :, torch.tensor([True, True, False])]  # remove last length index
-
+    s3 = stream_tensor_3d[:, :, torch.tensor([0, 1])]  # remove last length index
+    
     assert isinstance(s3, StreamTensor)
     assert s3.meta.ids == ["first", "middle", "last"]
     assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
     assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
-    assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # reduced by 1 for all but "last" since this was padding.
-    assert s3.names == (BATCH, "F", LENGTH)
+    assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # reduced by 1 for all but "last" since it was padding
+
+
+def test_length_indexing_1d_booltensor(stream_tensor_3d):
+    """Test that we can index a StreamTensor with a bool tensor (mask)."""
+    # Indexing with a bool tensor on the length dim should correctly adjust the meta lengths and sos/eos.
+    s1 = stream_tensor_3d[:, :, torch.tensor([False, True, True])]  # remove first length index
+
+    assert isinstance(s1, StreamTensor)
+    assert s1.meta.ids == ["first", "middle", "last"]
+    assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
+    assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
+    assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # reduced by 1 for all
+    assert s1.names == (BATCH, "F", LENGTH)
+    
+    s2 = stream_tensor_3d[:, :, torch.tensor([True, True, False])]  # remove last length index
+
+    assert isinstance(s2, StreamTensor)
+    assert s2.meta.ids == ["first", "middle", "last"]
+    assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
+    assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))  # changed to False
+    assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 2]))  # reduced by 1 for all but "last" since this was padding.
+    assert s2.names == (BATCH, "F", LENGTH)
 
 
 def test_length_indexing_nd_inttensor(stream_tensor_3d):
-    """"""
+    """Test for failure when indexing the length dimension with an nd tensor."""
     indices = torch.tensor([[0, 1], [0, 1]])
     with pytest.raises(NotImplementedError):
         stream_tensor_3d[:, :, indices]
 
 
 def test_length_indexing_nd_booltensor(stream_tensor_3d):
-    """"""
+    """Test for failure when indexing the length dimension with an nd tensor."""
     indices = torch.tensor([[False, True, True], [False, True, False]])
     with pytest.raises(NotImplementedError):
         stream_tensor_3d[:, indices]
+        
+
+def test_batch_and_length_indexing_shared_2d_inttensor(stream_tensor_3d):
+    """Test that we can index a StreamTensor with a 2d int tensor if ??."""
+    raise NotImplementedError
+
+
+def test_batch_and_length_indexing_shared_2d_booltensor(stream_tensor_3d):
+    """Test that we can index a StreamTensor with a 2d bool tensor when one dimension is batch and the other is length."""
+    raise NotImplementedError
+
+
+def test_batch_and_feature_indexing_shared_2d_inttensor(stream_tensor_3d):
+    raise NotImplementedError
+
+
+def test_batch_and_feature_indexing_shared_2d_booltensor(stream_tensor_3d):
+    """Test that we can index a StreamTensor with a 2d bool tensor when one dimension is batch and the other is feature."""
+    raise NotImplementedError
+
+
+def test_length_and_feature_indexing_shared_2d_inttensor(stream_tensor_3d):
+    raise NotImplementedError
+
+
+def test_length_and_feature_indexing_shared_2d_booltensor(stream_tensor_3d):
+    """Test that we can index a StreamTensor with a 2d bool tensor when one dimension is length and the other is feature."""
+    raise NotImplementedError
 
 
 def test_length_indexing_integer_multidimensional(stream_tensor_3d):

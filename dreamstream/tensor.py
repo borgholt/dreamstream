@@ -13,6 +13,7 @@ from torch import Tensor
 
 from dreamstream.func_coverage import DECOUPLE_FUNCTIONS, RECOUPLE_FUNCTIONS, VALID_FUNCTIONS, OVERRIDDEN_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
+from dreamstream.utils.numba import is_sorted_ascending, make_indices_positive_, minmax, update_eos_from_integer, update_lengths_from_list_of_indices
 
 
 # TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when they
@@ -28,7 +29,7 @@ def recouple(func, tensor, *args, **kwargs):
     """Call function on tensor after recoupling it to StreamMetadata and recouple again afterwards."""
     tensor, meta, names = tensor.decouple()
     tensor = func(tensor, *args, **kwargs)
-    tensor.rename_(names)
+    tensor.rename_(*names)
     return as_stream_tensor(data=tensor, meta=meta, names=names)
 
 
@@ -231,18 +232,34 @@ class StreamMetadata:
         self, indices: Union[int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
         """Index the metadata along the batch and/or length dimensions."""
-        raise self.index(indices)
+        return self.index(indices)
 
     def index(
-        self, indices: Union[int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]
+        self, indices: Union[None, int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
         """Index the metadata along the batch and/or length dimensions."""
-        raise NotImplementedError("2D indexing is not yet supported. Use index_length() and index_batch() instead.")
+        if isinstance(indices, (list, tuple)) and not all(isinstance(i, (int, bool)) for i in indices):
+            batch_indices, length_indices = indices
+            if batch_indices is None and length_indices is None:
+                return self
+            if batch_indices is not None and length_indices is None:
+                return self.index_batch(batch_indices)
+            if batch_indices is None and length_indices is not None:
+                return self.index_length(length_indices)
+            return self.index_batch(batch_indices).index_length(length_indices)
+
+        return self.index_batch(indices)            
 
     def index_batch(
-        self, indices: Union[int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]
+        self, indices: Union[None, int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
         """Return a StreamMetadata object with the specified batch indices."""
+        if indices is None:
+            return self  # TODO (JDH): Should we return a copy instead?
+
+        if isinstance(indices, torch.Tensor) and indices.ndim > 1:
+            raise ValueError(f"Expected batch indices to be a 1-dimensional tensor, but got {indices.ndim} dimensions.")
+
         if isinstance(indices, torch.BoolTensor):
             ids = [id for i, id in enumerate(self.ids) if indices[i]]
             sos = self.sos[indices]
@@ -268,66 +285,92 @@ class StreamMetadata:
         return StreamMetadata(ids, sos, eos, lengths)
 
     def index_length(
-        self, indices: Union[int, slice, List[int], Tuple[int], torch.IntTensor, torch.BoolTensor]
+        self, indices: Union[None, int, slice, List[int], Tuple[int], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
         """Return a StreamMetadata object with the specified length indices."""
-        if isinstance(indices, int):
-            # Convert negative indices to positive
-            if indices < 0:
-                indices = self.max_length + indices
-            # Set lengths to 1 for all examples except those where the integer index is in padding.
-            lengths = (self.lengths - indices).clamp(max=1)
-            sos = self.sos.clone() if indices == 0 else torch.zeros_like(self.sos)
-            eos = self.eos & (self.lengths <= indices + 1)  # TODO (JDH): Would `self.lengths < indices` be better?
-            return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        match indices:
+            case None:
+                return self  # TODO (JDH): Should we return a copy instead?
+            case int():
+                return self._index_length_int(indices)
+            case slice():
+                return self._index_length_slice(indices)
+            case list() | tuple():
+                return self._index_length_list(indices)
+            case torch.Tensor() if indices.ndim == 1:
+                return self._index_length_1d_tensor(indices)
+            case torch.Tensor() if indices.ndim > 1:
+                raise NotImplementedError("Indexing length with multidimensional torch tensors is not yet implemented.")
+                # if indices.dtype == torch.bool:
+                #     # BoolTensor that has flattened the length dim along with other dims
+                #     # TODO (JDH): Set lengths 1 for any examples that have at least one True value.
+                #     pass
+                # else:
+                #     # IntTensor that creates new dims off of the length dim
+                #     pass
+            case _:
+                raise NotImplementedError(f"Indexing with {indices} is not supported.")
 
-        if isinstance(indices, slice):
-            #
-            start, stop, stride = indices.indices(self.max_length)
-            if stride < 0:
-                # TODO (JDH): Allow negative strides only if all examples have the same length equal to tensor's length.
-                msg = "Negative strides are not supported on StreamTensors. Instead, use `reverse_sequence`."
-                raise NotImplementedError(msg)
+    def _index_length_int(self, index: int) -> "StreamMetadata":
+        # Convert negative indices to positive
+        if index < 0:
+            index = self.max_length + index
 
-            if stride == 1:
-                lengths = (self.lengths - start).clip(min=0, max=stop - start)
-            else:
-                # Compute the right-most length index that is included in the slice from slice(start, stop, stride)
-                stop = self.max_length - ((self.max_length - 1 - start) % stride)
-                lengths = (self.lengths - start).clip(min=0, max=stop - start).div(stride).ceil().to(self.lengths.dtype)
+        # Set lengths to 1 for all examples except those where the integer index is in padding (set to 0)
+        lengths = (self.lengths - index).clamp(min=0, max=1)
+        sos = self.sos.clone() if index == 0 else torch.zeros_like(self.sos)
+        eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), self.lengths.numpy(), index))
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
 
-            sos = self.sos.clone() if start == 0 else torch.zeros_like(self.sos)
-            eos = self.eos & (self.lengths <= stop)  # TODO (JDH): Would `self.lengths < indices` be better?
-            return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+    def _index_length_slice(self, slice: slice) -> "StreamMetadata":
+        # Convert start and stop to positive indices
+        start, stop, stride = slice.indices(self.max_length)
 
-        if isinstance(indices, (list, tuple)):
-            raise NotImplementedError("Indexing with lists and tuples is not yet implemented.")
-            # if not all(isinstance(i, int) for i in indices):
-            #     raise ValueError("Indices must contain integers but looked like multidimensional indexing.")
+        if stride < 0:
+            # TODO (JDH): Allow negative strides only if all examples have the same length equal to tensor's length.
+            msg = "Negative strides along length not supported on StreamTensors. Instead, use `reverse_sequence`."
+            raise NotImplementedError(msg)
 
-            # Convert negative indices to positive
-            indices = [i if i >= 0 else self.max_length + i for i in indices]
+        if stride == 1:
+            # TODO (JDH): Implement `update_lengths_from_integer`
+            lengths = (self.lengths - start).clip(min=0, max=stop - start)
+        else:
+            # Compute the right-most length index that is included in the slice from slice(start, stop, stride)
+            stop = self.max_length - ((self.max_length - 1 - start) % stride)
+            lengths = (self.lengths - start).clip(min=0, max=stop - start).div(stride).ceil().to(self.lengths.dtype)
 
-            # Raise error if the indices are not sorted and any index is into padding (i.e. lengths < indices)
-            # TODO (JDH)
+        sos = self.sos.clone() if start == 0 else torch.zeros_like(self.sos)
+        eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), self.lengths.numpy(), stop - 1))
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
 
-            # if 0 in indices and indices.index(0) != 0:
-            #     raise NotImplementedError("Cannot index StreamMetadata with 0 and other indices.")
+    def _index_length_list(self, indices: Union[List[int], Tuple[int]]) -> "StreamMetadata":
+        # Convert to numpy arrays for faster manipulation and numba jit support.
+        lengths_np = self.lengths.numpy()  # 2 µs
+        indices_np = np.array(indices)  # 2 µs
+        make_indices_positive_(indices_np, self.max_length)  # inplace
 
-        if isinstance(indices, torch.Tensor) and indices.ndim == 1:
-            raise NotImplementedError("Indexing with 1D torch tensors is not yet implemented.")
+        # Raise error if the indices are not sorted
+        if not is_sorted_ascending(indices_np):
+            raise RuntimeError("Indices must be sorted when indexing length with lists or tuples.")
 
-        if isinstance(indices, torch.Tensor) and indices.ndim > 1:
-            raise NotImplementedError("Indexing with multidimensional torch tensors is not supported.")
-            if indices.dtype == torch.bool:
-                # BoolTensor that has flattened the length dim along with other dims
-                # TODO (JDH): Set lengths 1 for any examples that have at least one True value.
-                pass
-            else:
-                # IntTensor that creates new dims off of the length dim
-                pass
+        # Update lengths, sos, and eos
+        min_i, max_i = minmax(indices_np)
+        lengths = update_lengths_from_list_of_indices(lengths_np, indices_np)
+        sos = self.sos.clone() if min_i == 0 else torch.zeros_like(self.sos)
+        
+        eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), lengths_np, max_i - 1))  # 2 µs
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
 
-        raise NotImplementedError(f"Indexing with {indices} is not supported.")
+    def _index_length_1d_tensor(self, indices: torch.Tensor) -> "StreamMetadata":
+        if indices.dtype == torch.bool:
+            return self._index_length_1d_booltensor(indices)
+        return self._index_length_1d_inttensor(indices)
+    
+    def _index_length_1d_booltensor(self, indices: torch.BoolTensor) -> "StreamMetadata":
+        return self._index_length_list(indices.nonzero().squeeze().tolist())  # Adds ~10 µs
+
+    def _index_length_1d_inttensor(self, indices: torch.IntTensor) -> "StreamMetadata":
+        return self._index_length_list(indices.tolist())  # Adds ~1 µs
 
     @classmethod
     def cat(cls, metas: List["StreamMetadata"], dim: str) -> "StreamMetadata":

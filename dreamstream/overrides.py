@@ -254,8 +254,11 @@ def any_index_is_multidimensional_tensor(indices: Union[None, int, slice, Tensor
     """Return True if any of the indices are a multidimensional tensor."""
     if isinstance(indices, torch.Tensor) and indices.ndim > 1:
         return True
+
     if isinstance(indices, (list, tuple)):
         return any(any_index_is_multidimensional_tensor(i) for i in indices)
+
+    return False
 
 
 def determine_dims_affected_by_indexing(tensor: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]], recursive_dim: int = None, return_only_new_names: bool = False) -> Tuple[List[int], Tuple[str, ...]]:
@@ -338,9 +341,22 @@ def determine_dims_affected_by_indexing(tensor: StreamTensor, indices: Union[Non
 
 @implements(torch.Tensor.__getitem__)
 def __getitem__(self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]) -> StreamTensor:
+    """Index a StreamTensor along any of its dimensions.
+    
+    If the indexing operation does not affect the batch or length dimensions it is done as usual and the resulting
+    tensor gets the same names and metadata as the original tensor. 
+    
+    If the indexing operation affects the batch dimension, the resulting tensor will have metadata only for the 
+    files that remain after indexing. 
+    
+    If the indexing operation affects the length dimension, the resulting tensor will have metadata with potentially
+    different lengths, sos and eos values that reflect whichever length indices were selected. The indexing operation
+    will fail if the length dimension is not indexed chronologically or if the length dimension is indexed with a
+    multidimensional tensor.
+    """
+    
+    tensor, meta, names = self.decouple(copy_meta=False)
 
-    meta = self.meta
-    tensor = self.tensor().rename(None)
     indexed_tensor = tensor[indices]
 
     dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
@@ -354,29 +370,28 @@ def __getitem__(self: StreamTensor, indices: Union[None, int, slice, Tensor, Lis
     length_dim = self.length_dim
     any_is_batch_dim = any([dim == batch_dim for dim in dims_affected])
     any_is_length_dim = any([dim == length_dim for dim in dims_affected])
-    # import IPython
-    # IPython.embed(using=False)
 
-    if any_is_batch_dim or any_is_length_dim:
-        if any_index_is_multidimensional_tensor(indices):
-            msg = "Indexing with a >1D tensor that affects the batch or length dimensions is not supported."
-            raise NotImplementedError(msg)
+    if not (any_is_batch_dim or any_is_length_dim):
+        # Indexing operation does not affect the batch or length dimensions, return the indexed tensor with same meta.
+        return StreamTensor(indexed_tensor, meta.clone())
 
-        # TODO (JDH): Handle simultaneous indexing along the batch and length dimensions.
-        # e.g.
-        # >>> meta[index]
-        # where index is Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]] and indexes batch or length or both
-        if any_is_length_dim:
-            # Get the index that was used along the length dimension of the tensor.
-            index = indices[length_dim] if is_multidimensional_indexing(indices) else indices
-            meta = meta.index_length(index)
+    if any_index_is_multidimensional_tensor(indices):
+        msg = "Indexing with a multidimensional tensor that affects the batch or length dimensions is not supported."
+        raise NotImplementedError(msg)
 
-        if any_is_batch_dim:
-            # Get the index that was used along the batch dimension of the tensor.
-            index = indices[batch_dim] if is_multidimensional_indexing(indices) else indices
-            meta = meta.index_batch(index)
+    if any_is_length_dim:
+        # Get the index that was used along the length dimension of the tensor.
+        length_index = indices[length_dim] if is_multidimensional_indexing(indices) else indices
     else:
-        meta = meta.clone()
+        length_index = None
+
+    if any_is_batch_dim:
+        # Get the index that was used along the batch dimension of the tensor.
+        batch_index = indices[batch_dim] if is_multidimensional_indexing(indices) else indices
+    else:
+        batch_index = None
+
+    meta = meta[batch_index, length_index]
 
     stream_tensor = StreamTensor(indexed_tensor, meta)
     return stream_tensor
