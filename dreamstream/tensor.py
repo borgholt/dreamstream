@@ -4,7 +4,7 @@ import uuid
 import warnings
 
 from copy import deepcopy
-from typing import Any, Callable, List, Self, Tuple, Union
+from typing import Any, Callable, List, Tuple, Union
 
 import torch
 import numpy as np
@@ -609,7 +609,7 @@ class StreamTensor(torch.Tensor):
             tensor.rename_(None)  # 2-3 µs
         return tensor
     
-    def drop_empty(self) -> Self:
+    def drop_empty(self) -> "StreamTensor":
         """Remove empty tensors from the batch."""
         if self.meta.min_length > 0:
             return self
