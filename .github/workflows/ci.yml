@@ -17,15 +17,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # os: [ubuntu-22.04, ubuntu-20.04]
+        os: [ubuntu-22.04, ubuntu-20.04]
         python-version: ["3.9", "3.10", "3.11"]
 
-    # runs-on: ${{ matrix.os }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v3
-    - name: Set up Python 3.10
+    - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v3
       with:
         python-version: ${{ matrix.python-version }}
@@ -36,8 +35,6 @@ jobs:
       with:
         path: ./.venv/
         key: ${{ runner.os }}-${{ matrix.python-version }}-venv-${{ hashFiles('requirements.txt') }}
-        # restore-keys: |
-        #   ${{ runner.os }}-${{ matrix.python-version }}-venv-
 
     - name: Install dependencies
       run: |
@@ -57,9 +54,9 @@ jobs:
         source ./.venv/bin/activate
         pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
 
-    # - name: Lint with ruff
-    # - uses: actions/checkout@v3
-    # - uses: chartboost/ruff-action@v1
+    - name: Lint with ruff
+      uses: actions/checkout@v3
+    - uses: chartboost/ruff-action@v1
 
     # - name: Ensure formatted with black
     # - uses: actions/checkout@v3
