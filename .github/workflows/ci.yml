@@ -54,6 +54,16 @@ jobs:
     #     source ./.venv/bin/activate
     #     pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
 
+  lint-and-format:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]
+        python-version: ["3.11"]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
     - name: Ensure formatted with black
       uses: actions/checkout@v3
     - uses: psf/black@stable
