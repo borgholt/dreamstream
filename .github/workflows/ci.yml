@@ -34,7 +34,7 @@ jobs:
       id: cache-venv
       with:
         path: ./.venv/
-        key: $${{ matrix.os }}-${{ matrix.python-version }}-venv-${{ hashFiles('requirements.txt') }}
+        key: ${{ matrix.os }}-${{ matrix.python-version }}-venv-${{ hashFiles('requirements.txt') }}
 
     - name: Install dependencies
       run: |
@@ -52,8 +52,18 @@ jobs:
     - name: Run tests with pytest
       run: |
         source ./.venv/bin/activate
-        pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
+        python -m pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
 
+  lint-and-format:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04]
+        python-version: ["3.11"]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
     - name: Ensure formatted with black
       uses: actions/checkout@v3
     - uses: psf/black@stable
@@ -64,4 +74,3 @@ jobs:
     - name: Lint with ruff
       uses: actions/checkout@v3
     - uses: chartboost/ruff-action@v1
-
