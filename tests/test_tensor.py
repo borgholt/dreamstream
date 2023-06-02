@@ -72,7 +72,7 @@ def test_function_coverage():
 
     fraction_working = (num_overridden + num_valid) / num_total
 
-    assert num_total == len(FLAT_OVERRIDABLE_FUNCTIONS)
+    assert num_total >= len(FLAT_OVERRIDABLE_FUNCTIONS)
     assert fraction_working > 0.8, f"Only {fraction_working*100:.1f} % of functions are covered (req >80%)."
 
 

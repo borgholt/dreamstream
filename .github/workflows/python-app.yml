@@ -30,16 +30,27 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    - uses: actions/cache@v2
+    - name: cache virtualenv
+      uses: actions/cache@v3
+      id: cache-venv
       with:
-        path: ${{ env.pythonLocation }}
-        key: ${{ env.pythonLocation }}-${{ hashFiles('pyproject.toml') }}-${{ hashFiles('requirements.txt') }}
+        path: ./.venv/
+        key: ${{ runner.os }}-${{ matrix.python-version }}-venv-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.python-version }}-venv-
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install --upgrade .
-        pip install -r requirements.txt
+        python -m venv ./.venv
+        source ./.venv/bin/activate
+        python -m pip install -r requirements.txt
+      if: steps.cache-venv.outputs.cache-hit != 'true'
+
+    - name: Install repo package
+      run: |
+        source ./.venv/bin/activate
+        python -m pip install -e .
 
     - name: Run tests with pytest
       run: |
