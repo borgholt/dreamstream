@@ -301,39 +301,36 @@ def determine_dims_affected_by_indexing(
     """
 
     is_recursive = recursive_dim is not None
-    recursive_dim = 0 if recursive_dim is None else recursive_dim
+    first_dim = 0 if recursive_dim is None else recursive_dim
     names = tensor.names
 
     # If indices is None, slice(None) or Ellipsis, no dimensions are affected.
     if indices is None or indices == slice(None) or indices is Ellipsis:
-        return [], [names[recursive_dim]] if is_recursive else names
+        return [], [names[first_dim]] if is_recursive else names
 
     # If indices is an int or a slice, or a 1D IntTensor, or a 1D BoolTensor, only the first dimension is affected.
-    if isinstance(indices, (int, slice)) or (isinstance(indices, Tensor) and indices.ndim == 1):
+    if isinstance(indices, (int, slice)) or (isinstance(indices, torch.Tensor) and indices.ndim == 1):
         if isinstance(indices, int):
-            return [recursive_dim], [] if is_recursive else [n for i, n in enumerate(names) if i != recursive_dim]
-        return [recursive_dim], [names[recursive_dim]] if is_recursive else names
+            return [first_dim], [] if is_recursive else [n for i, n in enumerate(names) if i != first_dim]
+        return [first_dim], [names[first_dim]] if is_recursive else names
 
     # If indices is a List[int] or a Tuple[int, ...], indexing is coordinate indexing along the first dimension.
     if isinstance(indices, (list, tuple)) and all(isinstance(i, (int, bool)) for i in indices):
-        return [recursive_dim], [names[recursive_dim]] if is_recursive else names
+        return [first_dim], [names[first_dim]] if is_recursive else names
 
     # If indices is a BoolTensor with N>1 dimensions, indexing starts from the first dimension and affects the next
     # `indices.ndim` dimensions to the right. All affected dimensions are flattened into a single dimension with length
     # equal to the total number of True values in `indices`.
     if isinstance(indices, torch.Tensor) and indices.dtype == torch.bool and indices.ndim > 1:
-        names = (None,) if is_recursive else names[:recursive_dim] + (None,) + names[recursive_dim + indices.ndim :]
-        return list(range(recursive_dim, recursive_dim + indices.ndim)), names
+        names = (None,) if is_recursive else names[:first_dim] + (None,) + names[first_dim + indices.ndim :]
+        return list(range(first_dim, first_dim + indices.ndim)), names
 
     # If indices is an IntTensor with N>1 dimensions, N-1 new dimensions are inserted before the first dimension. But
     # still, only the first dimension is affected.
     if isinstance(indices, torch.Tensor) and not torch.is_floating_point(indices) and indices.ndim > 1:
-        names = (
-            (None,) * (indices.ndim - 1) + (names[recursive_dim],)
-            if is_recursive
-            else (None,) * (indices.ndim - 1) + names
-        )
-        return [recursive_dim], names
+        new_none_dims = (None,) * (indices.ndim - 1)
+        names = new_none_dims + (names[first_dim],) if is_recursive else new_none_dims + names
+        return [first_dim], names
 
     # If indices is a List[Union[int, slice, Tensor, List[int], Tuple[int, ...]]] or a Tuple[Union[int, slice, Tensor,
     # List[int], Tuple[int, ...]], ...], indexing is a number of indexing operations on different dimensions.
