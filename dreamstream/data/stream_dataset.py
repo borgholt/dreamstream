@@ -75,7 +75,7 @@ def concatenate_ragged(
     The output tensor has shape (batch, *, dim, *)."""
     # convert to positive dim.
     dim = dim if dim >= 0 else len(batch[0].shape) + dim
-    
+
     # move temporal dimension to beginning and pad with torch.nn.utils.rnn.pad_sequence.
     batch = [b.transpose(dim, 0) for b in batch]  # (dim, *)
     batch = torch.nn.utils.rnn.pad_sequence(batch, batch_first=True, padding_value=pad_value)  # (batch, dim, *)
@@ -417,10 +417,7 @@ if __name__ == "__main__":
             batches.append(batch)
 
             files_seen.update(batch.meta.ids)
-            sample_ids = [
-                f"{batch.meta.ids[i]} {batch.meta.chunk_index[i]:2d}"
-                for i in range(len(batch.meta.ids))
-            ]
+            sample_ids = [f"{batch.meta.ids[i]} {batch.meta.chunk_index[i]:2d}" for i in range(len(batch.meta.ids))]
             samples_seen.extend(sample_ids)
 
             filenames = [id.split("/")[-1].split(".")[0] for id in batch.meta.ids]

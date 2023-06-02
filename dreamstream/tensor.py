@@ -13,7 +13,7 @@ from dreamstream.func_coverage import DECOUPLE_FUNCTIONS, RECOUPLE_FUNCTIONS, VA
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
-# TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when 
+# TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when
 # they are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the graph.
 
 
@@ -128,7 +128,7 @@ class StreamMetadata:
     @max_length.setter
     def max_length(self, length):
         raise AttributeError("max_length is read-only.")
-    
+
     def _update_lengths(self):
         if self._lengths_updated:
             self._min_length = self.lengths.min().item()
@@ -606,7 +606,7 @@ class StreamTensor(torch.Tensor):
         if not keep_names:
             tensor.rename_(None)  # 2-3 µs
         return tensor
-    
+
     def drop_empty(self) -> "StreamTensor":
         """Remove empty tensors from the batch."""
         if self.meta.min_length > 0:
@@ -630,10 +630,7 @@ class StreamTensor(torch.Tensor):
         length_dim = self.names.index(LENGTH)
         if batch_dim < length_dim:
             length_dim -= 1
-        return [
-            x.narrow(length_dim, 0, x.meta.lengths.item())
-            for x in self.unbind(dim=batch_dim)
-        ]
+        return [x.narrow(length_dim, 0, x.meta.lengths.item()) for x in self.unbind(dim=batch_dim)]
 
     def decouple(self, copy_meta: bool = False) -> Tuple[Tensor, StreamMetadata, Tuple[str]]:
         """Decouple the StreamTensor from names and metadata."""

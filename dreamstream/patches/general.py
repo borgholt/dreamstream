@@ -1,5 +1,3 @@
-
-
 def online(self, mode=True):
     if not isinstance(mode, bool):
         raise ValueError("streaming mode is expected to be boolean")

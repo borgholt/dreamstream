@@ -9,6 +9,7 @@ from dreamstream.nn.utils import pad_full_sequence
 from dreamstream.patches import patch_conv_1d
 from dreamstream.data import OutputCollector
 
+
 def random_chunks(full_length):
     chunks = []
     chunk_sum, remaining = 0, full_length
@@ -17,6 +18,7 @@ def random_chunks(full_length):
         chunk_sum = sum(chunks)
         remaining = full_length - chunk_sum
     return chunks
+
 
 conv = nn.Conv1d(256, 128, 7, padding=3)
 conv = patch_conv_1d(conv)
@@ -36,9 +38,10 @@ for x in batch.split(chunks, dim=2):
         y = conv(x)
     except Exception:
         import IPython
+
         IPython.embed(using=False)
     stream_output.update(y)
-    
+
 for _id, _y in targets.items():
     y = stream_output[_id].tensor()
     print(torch.allclose(_y, y), (_y - y).abs().max().item())
