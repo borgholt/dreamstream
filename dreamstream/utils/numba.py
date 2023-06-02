@@ -49,7 +49,7 @@ def make_indices_positive_(array, max_length: int) -> None:
 def broadcasted_leq_sum(array1, array2) -> np.ndarray:
     """Return a 1D array of the number of elements in array1 that are less than or equal to each element in array2.
 
-    This is more than 10x faster than the equivalent torch version on CPU: 
+    This is more than 10x faster than the equivalent torch version on CPU:
     > (self.lengths.unsqueeze(0) <= indices_t.unsqueeze(1)).sum(dim=0)
     """
     return np.sum(np.expand_dims(array1, axis=0) <= np.expand_dims(array2, axis=1), axis=0)

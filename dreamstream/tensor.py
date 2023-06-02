@@ -11,7 +11,13 @@ from torch import Tensor
 
 from dreamstream.func_coverage import DECOUPLE_FUNCTIONS, RECOUPLE_FUNCTIONS, VALID_FUNCTIONS, OVERRIDDEN_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
-from dreamstream.utils.numba import is_sorted_ascending, make_indices_positive_, minmax, update_eos_from_integer, update_lengths_from_list_of_indices
+from dreamstream.utils.numba import (
+    is_sorted_ascending,
+    make_indices_positive_,
+    minmax,
+    update_eos_from_integer,
+    update_lengths_from_list_of_indices,
+)
 
 
 # TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when
@@ -246,7 +252,7 @@ class StreamMetadata:
                 return self.index_length(length_indices)
             return self.index_batch(batch_indices).index_length(length_indices)
 
-        return self.index_batch(indices)            
+        return self.index_batch(indices)
 
     def index_batch(
         self, indices: Union[None, int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]
@@ -317,6 +323,8 @@ class StreamMetadata:
         # Set lengths to 1 for all examples except those where the integer index is in padding (set to 0)
         lengths = (self.lengths - index).clamp(min=0, max=1)
         sos = self.sos.clone() if index == 0 else torch.zeros_like(self.sos)
+        # TODO (JDH): numba compiled arithmetic is much faster but slowed down due to conversion to/from numpy
+        # Maybe we should store sos and eos as numpy arrays instead of torch tensors?
         eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), self.lengths.numpy(), index))
         return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
 
@@ -355,7 +363,6 @@ class StreamMetadata:
         min_i, max_i = minmax(indices_np)
         lengths = update_lengths_from_list_of_indices(lengths_np, indices_np)
         sos = self.sos.clone() if min_i == 0 else torch.zeros_like(self.sos)
-        
         eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), lengths_np, max_i - 1))  # 2 µs
         return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
 
@@ -363,7 +370,7 @@ class StreamMetadata:
         if indices.dtype == torch.bool:
             return self._index_length_1d_booltensor(indices)
         return self._index_length_1d_inttensor(indices)
-    
+
     def _index_length_1d_booltensor(self, indices: torch.BoolTensor) -> "StreamMetadata":
         return self._index_length_list(indices.nonzero().squeeze().tolist())  # Adds ~10 µs
 
