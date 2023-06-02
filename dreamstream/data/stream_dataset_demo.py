@@ -6,7 +6,6 @@ from typing import List, Callable, Tuple
 from string import ascii_letters
 
 import random
-import time
 import numpy as np
 
 import torch
@@ -19,7 +18,7 @@ LOGGER = logging.getLogger(__file__)
 
 def partition_by_sum(values: List[float], num_partitions: int, shuffle: bool = False, sort: bool = True):
     assert not shuffle or not sort, "shuffle and sort cannot both be True"
-    
+
     num_values = len(values)
 
     if sort:
@@ -46,7 +45,9 @@ Metadata = namedtuple("Metadata", ["name"])
 
 
 class MyIterableDataset(IterableDataset):
-    def __init__(self, data_list: list, batch_size: int, shuffle: bool = False, drop_last: bool = False, name: str = None):
+    def __init__(
+        self, data_list: list, batch_size: int, shuffle: bool = False, drop_last: bool = False, name: str = None
+    ):
         self.data_list = data_list
         self.batch_size = batch_size
         self.shuffle = shuffle
@@ -59,22 +60,18 @@ class MyIterableDataset(IterableDataset):
             worker_id = worker.id if worker is not None else -1
             worker_seed = worker.seed if worker is not None else -1
 
-            start = time.time()
-            time.sleep(0.05)
-            end = time.time()
-
             yield x, self.name, worker_id, worker_seed
 
     def get_stream(self, data_list):
         return itertools.chain.from_iterable(map(self.process_data, data_list))
 
     def get_streams(self):
-        """Create a stream of data from the dataset. 
-        
-        Each stream element is a batch from the dataset (a list of `batch_size` elements), where each element is a 
+        """Create a stream of data from the dataset.
+
+        Each stream element is a batch from the dataset (a list of `batch_size` elements), where each element is a
         tuple of the form `(data, name, worker_id, worker_seed)`.
-        
-        Each batch is sampled without 
+
+        Each batch is sampled without
         """
         if self.shuffle:
             data_list = random.sample(self.data_list, len(self.data_list))
@@ -82,8 +79,8 @@ class MyIterableDataset(IterableDataset):
             data_list = self.data_list
 
         # partition naively
-        partitioned_shuffled_data_list = [data_list[i::self.batch_size] for i in range(self.batch_size)]
-        
+        partitioned_shuffled_data_list = [data_list[i :: self.batch_size] for i in range(self.batch_size)]
+
         data_streams = [self.get_stream(partitioned_shuffled_data_list[i]) for i in range(self.batch_size)]
         if self.drop_last:
             data_stream = zip(*data_streams)
@@ -125,13 +122,22 @@ class MyIterableDataset(IterableDataset):
         batch_size_per_worker = batch_size // max_workers
         names = ascii_letters.upper()
 
-        datasets = [cls(data_list=partitioned_data[i], batch_size=batch_size_per_worker, name=names[i]) for i in range(max_workers)]
+        datasets = [
+            cls(data_list=partitioned_data[i], batch_size=batch_size_per_worker, name=names[i])
+            for i in range(max_workers)
+        ]
         print(len(datasets))
         return datasets
 
 
-class MultiStreamDataLoader():
-    def __init__(self, datasets: List[IterableDataset], multiprocessed: bool = True, drop_last: bool = False, collate_fn: Callable = None) -> None:
+class MultiStreamDataLoader:
+    def __init__(
+        self,
+        datasets: List[IterableDataset],
+        multiprocessed: bool = True,
+        drop_last: bool = False,
+        collate_fn: Callable = None,
+    ) -> None:
         """Create a dataloader that iterates over multiple datasets in parallel.
         The number of workers is equal to the number of datasets.
 
@@ -143,7 +149,7 @@ class MultiStreamDataLoader():
         self.datasets = datasets
         self.multiprocessed = multiprocessed
         self.drop_last = drop_last
-        
+
         self.num_workers = len(datasets) if multiprocessed else 0
 
         if collate_fn is None:
@@ -163,7 +169,7 @@ class MultiStreamDataLoader():
 
         return stream_loaders
 
-    def _collate():
+    def _collate(self):
         pass
 
     def __iter__(self):
@@ -172,10 +178,9 @@ class MultiStreamDataLoader():
             batch_parts_flat = list(itertools.chain.from_iterable(batch_parts))
             collated_batch = self.collate_fn(batch_parts_flat)
             yield collated_batch
-            
+
 
 if __name__ == "__main__":
-
     # List of examples consisting of "chunks" of data from a single file (e.g. a1 through a7 is 7 chunks from file a)
     data_list = [
         ["a1", "a2", "a3", "a4", "a5", "a6", "a7"],
@@ -191,7 +196,9 @@ if __name__ == "__main__":
     ]
 
     datasets = MyIterableDataset.split_datasets(data_list, batch_size=6, max_workers=3)
-    loader = MultiStreamDataLoader(datasets, multiprocessed=True, drop_last=False, collate_fn=MyIterableDataset.custom_collate)
-    
+    loader = MultiStreamDataLoader(
+        datasets, multiprocessed=True, drop_last=False, collate_fn=MyIterableDataset.custom_collate
+    )
+
     for batch, metadata in loader:
         print(batch, metadata)

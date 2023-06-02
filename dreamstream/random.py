@@ -3,6 +3,7 @@ import torch
 from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.utils.flags import LENGTH, BATCH
 
+
 def rand_stream_tensor(*size, names, **kwargs):
     """
     Creates a StreamTensor with random values and metadata.
