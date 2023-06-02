@@ -62,7 +62,7 @@ TEST_KWARGS_RECOUPLE_FUNCTIONS = {
     torch.transpose: dict(dim0=0, dim1=1),
 }
 
-TEST_SKIP_EQUALS_CHECK = {torch.Tensor.__repr__}
+TEST_SKIP_EQUALITY_CHECK = {torch.Tensor.__repr__}
 
 
 def test_valid_coupled_recoupled_functions(stream_tensor_3d):
@@ -78,7 +78,7 @@ def test_valid_coupled_recoupled_functions(stream_tensor_3d):
             stream_tensor_out = f(stream_tensor_3d, **kwargs)
             torch_tensor_out = f(stream_tensor_3d.tensor(), **kwargs)
 
-            if f in TEST_SKIP_EQUALS_CHECK:
+            if f in TEST_SKIP_EQUALITY_CHECK:
                 continue
 
             if isinstance(torch_tensor_out, torch.Tensor):
@@ -310,12 +310,6 @@ def test_length_indexing_list_tuple(stream_tensor_3d):
     assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
     assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since it was padding
 
-#     assert isinstance(s1, StreamTensor)
-#     assert s1.meta.ids == ["first", "middle", "last"]
-#     assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
-#     assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
-#     assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all but "last" since this was padding.
-#     assert s1.names == (BATCH, "F", LENGTH)
 
 def test_length_indexing_1d_inttensor(stream_tensor_3d):
     """"""
@@ -366,23 +360,87 @@ def test_length_indexing_1d_booltensor(stream_tensor_3d):
     assert s2.names == (BATCH, "F", LENGTH)
 
 
-def test_length_indexing_nd_inttensor(stream_tensor_3d):
-    """Test for failure when indexing the length dimension with an nd tensor."""
-    indices = torch.tensor([[0, 1], [0, 1]])
-    with pytest.raises(NotImplementedError):
-        stream_tensor_3d[:, :, indices]
+# def test_batch_or_length_indexing_nd_inttensor(stream_tensor_3d):
+#     """Test for failure when indexing the length dimension with an nd tensor."""
+#     indices = torch.tensor([[0, 1], [0, 1]])
+#     with pytest.raises(NotImplementedError):
+#         stream_tensor_3d[indices, :, :]
+
+#     indices = torch.tensor([[0, 1], [0, 1]])
+#     with pytest.raises(NotImplementedError):
+#         stream_tensor_3d[:, :, indices]
 
 
-def test_length_indexing_nd_booltensor(stream_tensor_3d):
-    """Test for failure when indexing the length dimension with an nd tensor."""
-    indices = torch.tensor([[False, True, True], [False, True, False]])
-    with pytest.raises(NotImplementedError):
-        stream_tensor_3d[:, indices]
-        
+# def test_length_indexing_nd_booltensor(stream_tensor_3d):
+#     """Test for failure when indexing the length dimension with an nd tensor."""
+#     indices = torch.tensor([[False, True, True], [False, True, False]])
+#     with pytest.raises(NotImplementedError):
+#         stream_tensor_3d[:, indices]
+
+
+def test_indexing_ellipsis(stream_tensor_3d):
+    """Test that we can index a StreamTensor with an ellipsis."""
+    s1_1 = stream_tensor_3d[0, ...]  # keep only first batch example
+    
+    assert isinstance(s1_1, StreamTensor)
+    assert s1_1.meta.ids == ["first"]
+    assert torch.equal(s1_1.meta.sos, torch.tensor([True]))
+    assert torch.equal(s1_1.meta.eos, torch.tensor([False]))
+    assert torch.equal(s1_1.meta.lengths, torch.tensor([3]))
+    assert s1_1.names == ("F", LENGTH)
+    
+    s1_2 = stream_tensor_3d[0, ..., :]  # keep only first batch example
+    
+    assert isinstance(s1_2, StreamTensor)
+    assert s1_2.meta.ids == ["first"]
+    assert torch.equal(s1_2.meta.sos, torch.tensor([True]))
+    assert torch.equal(s1_2.meta.eos, torch.tensor([False]))
+    assert torch.equal(s1_2.meta.lengths, torch.tensor([3]))
+    assert s1_1.names == ("F", LENGTH)
+    
+    s1_3 = stream_tensor_3d[0, :, ...]  # keep only first batch example
+    
+    assert isinstance(s1_3, StreamTensor)
+    assert s1_3.meta.ids == ["first"]
+    assert torch.equal(s1_3.meta.sos, torch.tensor([True]))
+    assert torch.equal(s1_3.meta.eos, torch.tensor([False]))
+    assert torch.equal(s1_3.meta.lengths, torch.tensor([3]))
+    assert s1_1.names == ("F", LENGTH)
+    
+    s1_4 = stream_tensor_3d[0, ..., ...]  # keep only first batch example
+    
+    assert isinstance(s1_4, StreamTensor)
+    assert s1_4.meta.ids == ["first"]
+    assert torch.equal(s1_4.meta.sos, torch.tensor([True]))
+    assert torch.equal(s1_4.meta.eos, torch.tensor([False]))
+    assert torch.equal(s1_4.meta.lengths, torch.tensor([3]))
+    assert s1_1.names == ("F", LENGTH)
+
+    s3 = stream_tensor_3d[..., 0]  # keep only first length index
+    
+    assert isinstance(s3, StreamTensor)
+    assert s3.meta.ids == ["first", "middle", "last"]
+    assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
+    assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
+    assert torch.equal(s3.meta.lengths, torch.tensor([1, 1, 1]))  # set to 1
+    assert s3.names == (BATCH, "F")
+    
+    s4 = stream_tensor_3d[..., 0, ...]  # keep only first feature dim
+    
+    assert isinstance(s4, StreamTensor)
+    assert s4.meta.ids == ["first", "middle", "last"]
+    assert torch.equal(s4.meta.sos, torch.tensor([True, False, False]))
+    assert torch.equal(s4.meta.eos, torch.tensor([False, False, True]))
+    assert torch.equal(s4.meta.lengths, torch.tensor([3, 3, 2]))
+    
 
 def test_batch_and_length_indexing_shared_2d_inttensor(stream_tensor_3d):
     """Test that we can index a StreamTensor with a 2d int tensor if ??."""
-    raise NotImplementedError
+    indices = torch.tensor([[0, 1], [0, 1]])
+    s1 = stream_tensor_3d[indices, ...]
+    
+    assert isinstance(s1, StreamTensor)
+    assert s1.meta.ids == ["first", "middle", "last"]
 
 
 def test_batch_and_length_indexing_shared_2d_booltensor(stream_tensor_3d):

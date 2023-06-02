@@ -252,7 +252,11 @@ def conv1d(
 def is_multidimensional_indexing(indices: Union[None, int, slice, List[Any], Tuple[Any, ...]]):
     """Return True if any of the indices are multidimensional, i.e. not an int, slice, or list/tuple of ints but
     instead a list or tuple of those."""
-    return isinstance(indices, (list, tuple)) and not all(isinstance(i, (int, bool)) for i in indices)
+    return (
+        indices is Ellipsis
+        or isinstance(indices, (list, tuple))
+        and not all(isinstance(i, (int, bool)) for i in indices)
+    )
 
 
 def any_index_is_multidimensional_tensor(indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]):
@@ -264,6 +268,51 @@ def any_index_is_multidimensional_tensor(indices: Union[None, int, slice, Tensor
         return any(any_index_is_multidimensional_tensor(i) for i in indices)
 
     return False
+
+
+def replace_ellipsis(indices: Union[Tuple[Any, ...], List[Any]], ndim: int) -> Union[List[Any]]:
+    if Ellipsis not in indices:
+        return indices
+
+    new_indices = deepcopy(indices)
+    if isinstance(new_indices, tuple):
+        new_indices = list(new_indices)
+
+    ellipsis_count = new_indices.count(Ellipsis)
+
+    if ndim < len(new_indices) - ellipsis_count:
+        raise IndexError(f"Too many indices for tensor of dimension {ndim}.")
+
+    # If there are more than one Ellipsis, we infer the equivalent number of dimensions covered by each one.
+    if ellipsis_count > 1:
+        # Collapse neighboring Ellipsis into a single Ellipsis
+        ellipsis_indices = [i for i, index in enumerate(new_indices) if index is Ellipsis]
+        for i in reversed(range(ellipsis_count - 1)):
+            if ellipsis_indices[i] + 1 == ellipsis_indices[i + 1]:
+                new_indices[ellipsis_indices[i]] = Ellipsis
+                del new_indices[ellipsis_indices[i] + 1]
+
+        ellipsis_count = new_indices.count(Ellipsis)
+
+        # We can only handle multiple remaining Ellipsis at this point, if they correspond to one dimension each.
+        if ellipsis_count > 1:
+            if len(new_indices) != ndim:
+                if len(new_indices) > ndim:
+                    raise IndexError(f"Too many indices for tensor of dimension {ndim}.")
+                raise IndexError(f"Cannot resolve Ellipsis (got {ellipsis_count} Ellipsis for {ndim} dimensions)")
+
+            # Replace each Ellipsis with a None slice
+            for i in range(ellipsis_count):
+                new_indices[ellipsis_indices[i]] = None
+
+            return new_indices
+
+    # Replace Ellipsis with as many Nones as needed to make the indices have the same length as the tensor
+    ellipsis_index = new_indices.index(Ellipsis)
+    num_missing_indices = ndim - len(new_indices) + 1
+    new_indices = new_indices[:ellipsis_index] + [None] * num_missing_indices + new_indices[ellipsis_index + 1:]
+
+    return new_indices
 
 
 def determine_dims_affected_by_indexing(
@@ -299,77 +348,86 @@ def determine_dims_affected_by_indexing(
     - slice(None, None, -1): Reverses the first dimension.
     - slice(None, None, -2): Reverses the first dimension and removes every other element.
     """
-
     is_recursive = recursive_dim is not None
     first_dim = 0 if recursive_dim is None else recursive_dim
     names = tensor.names
 
-    # If indices is None, slice(None) or Ellipsis, no dimensions are affected.
-    if indices is None or indices == slice(None) or indices is Ellipsis:
-        return [], [names[first_dim]] if is_recursive else names
+    # If indices is None, slice(None), or Ellipsis no dimensions are affected.
+    if indices is None or indices == slice(None):
+        return indices, [], [names[first_dim]] if is_recursive else names
+
+    if indices is Ellipsis:
+        if is_recursive:
+            raise RuntimeError("Ellipsis (...) should have been replaced with one or more `None` at this point...")
+        return indices, [], names
 
     # If indices is an int or a slice, or a 1D IntTensor, or a 1D BoolTensor, only the first dimension is affected.
     if isinstance(indices, (int, slice)) or (isinstance(indices, torch.Tensor) and indices.ndim == 1):
         if isinstance(indices, int):
-            return [first_dim], [] if is_recursive else [n for i, n in enumerate(names) if i != first_dim]
-        return [first_dim], [names[first_dim]] if is_recursive else names
+            return indices, [first_dim], [] if is_recursive else [n for i, n in enumerate(names) if i != first_dim]
+        return indices, [first_dim], [names[first_dim]] if is_recursive else names
 
     # If indices is a List[int] or a Tuple[int, ...], indexing is coordinate indexing along the first dimension.
     if isinstance(indices, (list, tuple)) and all(isinstance(i, (int, bool)) for i in indices):
-        return [first_dim], [names[first_dim]] if is_recursive else names
+        return indices, [first_dim], [names[first_dim]] if is_recursive else names
 
     # If indices is a BoolTensor with N>1 dimensions, indexing starts from the first dimension and affects the next
     # `indices.ndim` dimensions to the right. All affected dimensions are flattened into a single dimension with length
     # equal to the total number of True values in `indices`.
     if isinstance(indices, torch.Tensor) and indices.dtype == torch.bool and indices.ndim > 1:
         names = (None,) if is_recursive else names[:first_dim] + (None,) + names[first_dim + indices.ndim :]
-        return list(range(first_dim, first_dim + indices.ndim)), names
+        return indices, list(range(first_dim, first_dim + indices.ndim)), names
 
     # If indices is an IntTensor with N>1 dimensions, N-1 new dimensions are inserted before the first dimension. But
     # still, only the first dimension is affected.
     if isinstance(indices, torch.Tensor) and not torch.is_floating_point(indices) and indices.ndim > 1:
         new_none_dims = (None,) * (indices.ndim - 1)
         names = new_none_dims + (names[first_dim],) if is_recursive else new_none_dims + names
-        return [first_dim], names
+        return indices, [first_dim], names
 
     # If indices is a List[Union[int, slice, Tensor, List[int], Tuple[int, ...]]] or a Tuple[Union[int, slice, Tensor,
     # List[int], Tuple[int, ...]], ...], indexing is a number of indexing operations on different dimensions.
     if is_multidimensional_indexing(indices):
+        # We need to replace Ellipsis with the equivalent number of single-dim slices because it can be used to index
+        # multiple dimensions depending on the structure of the other indices.
+        indices = replace_ellipsis(indices, len(names))
+
         dims_affected = []
         new_names = []
         for i, index in enumerate(indices):
-            dims, names = determine_dims_affected_by_indexing(tensor, index, recursive_dim=i)
+            _, dims, names = determine_dims_affected_by_indexing(tensor, index, recursive_dim=i)
             dims_affected.extend(dims)
             new_names.extend(names)
 
-        return dims_affected, new_names
+        return indices, dims_affected, new_names
 
     msg = f"Indexing with {indices} is not supported. If you think this is a bug, please open an issue on GitHub."
     raise NotImplementedError(msg)
 
+
 @implements(torch.Tensor.__getitem__)
 def __getitem__(
-        self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]
-    ) -> StreamTensor:
+    self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]
+) -> StreamTensor:
     """Index a StreamTensor along any of its dimensions.
-    
+
     If the indexing operation does not affect the batch or length dimensions it is done as usual and the resulting
-    tensor gets the same names and metadata as the original tensor. 
-    
-    If the indexing operation affects the batch dimension, the resulting tensor will have metadata only for the 
-    files that remain after indexing. 
-    
+    tensor gets the same names and metadata as the original tensor.
+
+    If the indexing operation affects the batch dimension, the resulting tensor will have metadata only for the
+    files that remain after indexing.
+
     If the indexing operation affects the length dimension, the resulting tensor will have metadata with potentially
     different lengths, sos and eos values that reflect whichever length indices were selected. The indexing operation
     will fail if the length dimension is not indexed chronologically or if the length dimension is indexed with a
     multidimensional tensor.
     """
-    
+
     tensor, meta, names = self.decouple(copy_meta=False)
 
     indexed_tensor = tensor[indices]
 
-    dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
+    new_indices, dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
 
     if new_names:
         indexed_tensor = indexed_tensor.refine_names(*new_names)
@@ -385,19 +443,21 @@ def __getitem__(
         # Indexing operation does not affect the batch or length dimensions, return the indexed tensor with same meta.
         return StreamTensor(indexed_tensor, meta.clone())
 
-    if any_index_is_multidimensional_tensor(indices):
+    if any_index_is_multidimensional_tensor(new_indices):
+        import IPython
+        IPython.embed(using=False)
         msg = "Indexing with a multidimensional tensor that affects the batch or length dimensions is not supported."
         raise NotImplementedError(msg)
 
     if any_is_length_dim:
         # Get the index that was used along the length dimension of the tensor.
-        length_index = indices[length_dim] if is_multidimensional_indexing(indices) else indices
+        length_index = new_indices[length_dim] if is_multidimensional_indexing(new_indices) else new_indices
     else:
         length_index = None
 
     if any_is_batch_dim:
         # Get the index that was used along the batch dimension of the tensor.
-        batch_index = indices[batch_dim] if is_multidimensional_indexing(indices) else indices
+        batch_index = new_indices[batch_dim] if is_multidimensional_indexing(new_indices) else new_indices
     else:
         batch_index = None
 
