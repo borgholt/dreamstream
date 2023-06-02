@@ -41,18 +41,18 @@ jobs:
         python -m pip install --upgrade pip
         python -m venv ./.venv
         source ./.venv/bin/activate
+        python -m pip install -r requirements.txt
+      if: steps.cache-venv.outputs.cache-hit != 'true'
+
+    - name: Install repo package
+      run: |
+        source ./.venv/bin/activate
         python -m pip install -e .
-    #   if: steps.cache-venv.outputs.cache-hit != 'true'
 
-    # - name: Install repo package
-    #   run: |
-    #     source ./.venv/bin/activate
-    #     python -m pip install -e .
-
-    # - name: Run tests with pytest
-    #   run: |
-    #     source ./.venv/bin/activate
-    #     pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
+    - name: Run tests with pytest
+      run: |
+        source ./.venv/bin/activate
+        pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
 
   lint-and-format:
     strategy:
