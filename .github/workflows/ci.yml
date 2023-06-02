@@ -52,7 +52,7 @@ jobs:
     - name: Run tests with pytest
       run: |
         source ./.venv/bin/activate
-        pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
+        python -m pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
 
   lint-and-format:
     strategy:
