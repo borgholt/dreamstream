@@ -74,4 +74,3 @@ jobs:
     - name: Lint with ruff
       uses: actions/checkout@v3
     - uses: chartboost/ruff-action@v1
-
