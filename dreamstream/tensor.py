@@ -1,6 +1,4 @@
-import functools
 import itertools
-import uuid
 import warnings
 
 from copy import deepcopy
@@ -15,8 +13,8 @@ from dreamstream.func_coverage import DECOUPLE_FUNCTIONS, RECOUPLE_FUNCTIONS, VA
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
-# TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when they
-# are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the computation graph.
+# TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when 
+# they are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the graph.
 
 
 def decouple(func, tensor, *args, **kwargs):
