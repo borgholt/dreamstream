@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from dreamstream.tensor import StreamTensor, StreamMetadata, as_stream_tensor
+from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.func_coverage import OVERRIDDEN_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
 
@@ -50,15 +50,15 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     """If dim is the batch dimension of any StreamTensor, assert all are StreamTensors and concatenate the stream
     states as well. Else, call torch.cat.
     """
-    
+
     # Mirror torch.cat's error messages.
     for t in tensors:
         if not (-t.ndim <= dim < t.ndim):
-            raise IndexError(f"Dimension out of range (expected to be in range of [{-t.ndim}, {t.ndim-1}], but got {dim}.")
-    
+            raise IndexError(f"Dimension out of range (expected to be in [{-t.ndim}, {t.ndim-1}], but got {dim}.")
+
     if len(tensors) == 1:
         return tensors[0]
-    
+
     # Concatenation of at least one StreamTensor along the batch dimension.
     is_batch_dim = [t.is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]
     if any(is_batch_dim):
@@ -73,7 +73,7 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     if any(is_length_dim):
         for t in tensors[:-1]:
             if isinstance(t, StreamTensor) and t.meta.lengths.min() < t.max_length():
-                raise NotImplementedError("Only the last tensor can be padded when concatenating along the length dimension.")
+                raise NotImplementedError("Only the last tensor can be padded when concatenating along length.")
         meta = StreamMetadata.cat_length([t.meta for t in tensors if isinstance(t, StreamTensor)])
         meta.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])
         tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
@@ -127,7 +127,7 @@ def tensor_permute(tensor: StreamTensor, *dims: int):
 def split(tensor: StreamTensor, split_size_or_sections: Union[int, List[int]], dim: int = 0):
     meta = tensor.meta
     tensor = tensor.named_tensor()
-    
+
     if tensor.names[dim] in (LENGTH, BATCH):
         states = meta.split(split_size_or_sections, tensor.names[dim])
         tensors = tensor.split(split_size_or_sections, dim=dim)
@@ -151,7 +151,7 @@ def unbind(tensor: StreamTensor, dim=0):
 
     meta = tensor.meta
     tensor = tensor.named_tensor()
-    
+
     if tensor.names[dim] == BATCH:
         states = meta.unbind_batch()
         tensors = tensor.unbind(dim=dim)
@@ -183,14 +183,20 @@ def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: floa
     return StreamTensor(output, meta)
 
 
-
 def _compute_conv_output_lengths(input_lengths: Tensor, kernel_width: int, stride: int):
-    return 
+    return
 
 
 @implements(torch.conv1d)
-def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, stride: int = 1, padding: int = 0, dilation: int = 1, groups: int = 1):
-    
+def conv1d(
+    input: StreamTensor,
+    weight: Tensor,
+    bias: Optional[Tensor] = None,
+    stride: int = 1,
+    padding: int = 0,
+    dilation: int = 1,
+    groups: int = 1,
+):
     # Convert padding to single integer value.
     if padding == "same":
         raise NotImplementedError("Same padding is not currently supported for StreamTensors.")
@@ -198,22 +204,21 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
         padding = 0
     elif isinstance(padding, tuple):
         padding = padding[0]
-    
+
     assert padding >= 0, "Padding must be non-negative."
-    
-    # Compute kernel width and detach metadata and names. 
+
+    # Compute kernel width and detach metadata and names.
     kernel_width = weight.shape[2] + (weight.shape[2] - 1) * (dilation[0] - 1)
     input, meta, names = input.decouple()
-    
+
     if padding > 0:
-        
         # Adjust input lengths.
         if meta.all_starting_and_ending:
             meta.lengths += padding * 2
         elif meta.any_starting_or_ending:
             meta.starting_lengths += padding
             meta.ending_lengths += padding
-        
+
         # Apply padding.
         if not meta.all_starting_and_ending:
             applied_padding = meta.max_length - input.size(-1)
@@ -225,8 +230,8 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
                     input = F.pad(input, (0, applied_padding))
             if meta.any_starting and not meta.all_starting:
                 input[meta.sos] = torch.roll(input[meta.sos], shifts=padding, dims=-1)
-            padding = 0     
-    
+            padding = 0
+
     # Create buffer.
     output_lengths = ((meta.lengths - kernel_width) // stride[0] + 1).clip(min=0)
     next_start = output_lengths * stride[0]
@@ -235,17 +240,17 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
         for i, (start, end, _id, eos) in enumerate(zip(next_start, meta.lengths, meta.ids, meta.eos)):
             if not eos:
                 buffer[_id] = input[i, ..., start:end]
-    
+
     # Convolve input and revert to StreamTensor.
     output = torch.conv1d(input, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
     output.rename_(*names)
     meta.lengths = output_lengths
-    #TODO: Consider whether to zero out the padding.
+    # TODO: Consider whether to zero out the padding.
     return StreamTensor(output, meta), buffer
 
 
 def is_multidimensional_indexing(indices: Union[None, int, slice, List[Any], Tuple[Any, ...]]):
-    """Return True if any of the indices are multidimensional, i.e. not an int, slice, or list/tuple of ints but 
+    """Return True if any of the indices are multidimensional, i.e. not an int, slice, or list/tuple of ints but
     instead a list or tuple of those."""
     return isinstance(indices, (list, tuple)) and not all(isinstance(i, (int, bool)) for i in indices)
 
@@ -258,22 +263,26 @@ def any_index_is_multidimensional_tensor(indices: Union[None, int, slice, Tensor
         return any(any_index_is_multidimensional_tensor(i) for i in indices)
 
 
-def determine_dims_affected_by_indexing(tensor: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]], recursive_dim: int = None, return_only_new_names: bool = False) -> Tuple[List[int], Tuple[str, ...]]:
+def determine_dims_affected_by_indexing(
+    tensor: StreamTensor,
+    indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]],
+    recursive_dim: int = None,
+) -> Tuple[List[int], Tuple[str, ...]]:
     """Return the dimensions of the tensor that are affected by indexing with `indices`.
-    
+
     Also returns the names of the dimensions of the tensor resulting from the indexing. If the indexing operation
     removes a dimension, the name of that dimension is not included in the returned names. If the indexing operation
-    adds a dimension, the name of that dimension is None. 
-    
+    adds a dimension, the name of that dimension is None.
+
     If `recursive_dim` is given, only names of dimensions that are affected and remain after indexing are returned.
 
     - int: Selects a single index along the first dimension.
     - slice: Selects a range of indices along the first dimension.
-    - List[int]: Coordinate indexing along a dimension. 
+    - List[int]: Coordinate indexing along a dimension.
     - Tuple[int, ...]: Same as list[int]
     - IntTensor: Always indexes along the first dimension. If the IntTensor is ND for N>1, N - 1 new dimensions are
-    -   inserted before the first dimension with 
-    - BoolTensor: Selects all indices where the value is True. This flattens the indexed dimensions into a single 
+    -   inserted before the first dimension with
+    - BoolTensor: Selects all indices where the value is True. This flattens the indexed dimensions into a single
     -   dimension with length equal to the total number of True values.
     - Tuple[Union[int, slice, Tensor, List[int], Tuple[int, ...]], ...]: A number of indexing operations on different
     -   dimensions.
@@ -287,7 +296,7 @@ def determine_dims_affected_by_indexing(tensor: StreamTensor, indices: Union[Non
     - slice(None, None, -1): Reverses the first dimension.
     - slice(None, None, -2): Reverses the first dimension and removes every other element.
     """
-    
+
     is_recursive = recursive_dim is not None
     recursive_dim = 0 if recursive_dim is None else recursive_dim
     names = tensor.names
@@ -306,17 +315,21 @@ def determine_dims_affected_by_indexing(tensor: StreamTensor, indices: Union[Non
     if isinstance(indices, (list, tuple)) and all(isinstance(i, (int, bool)) for i in indices):
         return [recursive_dim], [names[recursive_dim]] if is_recursive else names
 
-    # If indices is a BoolTensor with N>1 dimensions, indexing starts from the first dimension and affects the next 
+    # If indices is a BoolTensor with N>1 dimensions, indexing starts from the first dimension and affects the next
     # `indices.ndim` dimensions to the right. All affected dimensions are flattened into a single dimension with length
     # equal to the total number of True values in `indices`.
     if isinstance(indices, torch.Tensor) and indices.dtype == torch.bool and indices.ndim > 1:
-        names = (None,) if is_recursive else names[:recursive_dim] + (None,) + names[recursive_dim + indices.ndim:]
+        names = (None,) if is_recursive else names[:recursive_dim] + (None,) + names[recursive_dim + indices.ndim :]
         return list(range(recursive_dim, recursive_dim + indices.ndim)), names
 
-    # If indices is an IntTensor with N>1 dimensions, N-1 new dimensions are inserted before the first dimension. But 
+    # If indices is an IntTensor with N>1 dimensions, N-1 new dimensions are inserted before the first dimension. But
     # still, only the first dimension is affected.
     if isinstance(indices, torch.Tensor) and not torch.is_floating_point(indices) and indices.ndim > 1:
-        names = (None,) * (indices.ndim - 1) + (names[recursive_dim],) if is_recursive else (None,) * (indices.ndim - 1) + names
+        names = (
+            (None,) * (indices.ndim - 1) + (names[recursive_dim],)
+            if is_recursive
+            else (None,) * (indices.ndim - 1) + names
+        )
         return [recursive_dim], names
 
     # If indices is a List[Union[int, slice, Tensor, List[int], Tuple[int, ...]]] or a Tuple[Union[int, slice, Tensor,
@@ -328,17 +341,17 @@ def determine_dims_affected_by_indexing(tensor: StreamTensor, indices: Union[Non
             dims, names = determine_dims_affected_by_indexing(tensor, index, recursive_dim=i)
             dims_affected.extend(dims)
             new_names.extend(names)
-            # print(names, new_names)
 
         return dims_affected, new_names
 
     msg = f"Indexing with {indices} is not supported. If you think this is a bug, please open an issue on GitHub."
     raise NotImplementedError(msg)
-    
+
 
 @implements(torch.Tensor.__getitem__)
-def __getitem__(self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]) -> StreamTensor:
-
+def __getitem__(
+    self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]
+) -> StreamTensor:
     meta = self.meta
     tensor = self.tensor().rename(None)
     indexed_tensor = tensor[indices]

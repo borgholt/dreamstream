@@ -8,6 +8,7 @@ def online(self, mode=True):
         module.online(mode)
     return self
 
+
 def offline(self):
     return self.online(mode=False)
 

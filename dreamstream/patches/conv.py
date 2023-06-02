@@ -1,20 +1,21 @@
 
 import types
-from copy import deepcopy
 
 import torch
-import torch.nn.functional as F
 
 from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.patches.general import online, offline
 from dreamstream.nn.utils import pad_stream_tensor
 
-#TODO: Add support for subsampling convolutions (i.e., stride > kernel_width).
+
+# TODO (LB): Add support for subsampling convolutions (i.e., stride > kernel_width).
+
 
 def conv_1d_pre_hook(self, inputs):
     
     if not self.streaming:
-        assert not isinstance(inputs[0], StreamTensor), "Using StreamTensors in offline mode might result in unexpected behavior."
+        if isinstance(inputs[0], StreamTensor):
+            raise RuntimeError("Using StreamTensors in offline mode might result in unexpected behavior.")
         return inputs
     
     input = inputs[0]
@@ -88,7 +89,6 @@ if __name__ == '__main__':
     import os
     import argparse
     from random import randint
-    from torch.nn.utils.rnn import pad_sequence
     
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     
@@ -118,7 +118,8 @@ if __name__ == '__main__':
         x1 = torch.rand(1, 32, randint(1, 20))
         #x2 = pad_sequence([x1, torch.rand(1, 32, randint(args.kernel_size, 50))], batch_first=True, padding_value=0)
         ss1 = StreamMetadata(ids=["test_1"], lengths=[x1.size(-1)], sos=[n == 0], eos=[n == N - 1])
-        #ss2 = StreamMetadata(ids=["test_1", "test_2"], lengths=[x1.size(-1), x2.size(-1)], first=[n == 0] * 2, last=[n == N - 1] * 2)
+        #ss2 = StreamMetadata(ids=["test_1", "test_2"], lengths=[x1.size(-1), x2.size(-1)], first=[n == 0] * 2, 
+        # last=[n == N - 1] * 2)
         xs1 = StreamTensor(x1, meta=ss1)
         #xs2 = StreamTensor(x2, meta=ss2)
         stream_inputs.append(xs1)

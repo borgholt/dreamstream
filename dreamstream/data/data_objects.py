@@ -1,10 +1,9 @@
 import uuid
 import dataclasses
-from typing import Optional, Union, List, Tuple
+from typing import Optional, List, Tuple
 
 import torch
 import torchaudio
-from torch.nn.utils.rnn import pad_sequence
 
 from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.utils.flags import BATCH, LENGTH
@@ -74,7 +73,9 @@ class AudioSample:
 #             # Discard empty sequences.
 #             mask = chunk_lengths > 0
 #             meta.filter(mask)
-#             chunk = chunk[:, mask].refine_names(*names) # TODO: After implementing masked select, call refine names earlier.
+
+#               # TODO: After implementing masked select, call refine names earlier.
+#             chunk = chunk[:, mask].refine_names(*names)
             
 #             # Convert to stream tensor chunk.
 #             chunk = StreamTensor(chunk, meta)

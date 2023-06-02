@@ -17,10 +17,14 @@ import torchaudio
 from torch.utils.data import IterableDataset, DataLoader
 
 from dreamstream.data.data_objects import AudioSample
-from dreamstream.tensor import BATCH, LENGTH, StreamTensor, StreamMetadata, stream_tensor
+from dreamstream.tensor import StreamTensor, stream_tensor
 
 
 LOGGER = logging.getLogger(__file__)
+
+
+# TODO (JDH): Add boolean flag to switch between starting a new call as soon as the previous one ends, or waiting for
+# all calls of the previous batch to end before starting new calls.
 
 
 def partition_by_sum(
@@ -257,7 +261,7 @@ class AudioStreamDataset(IterableDataset):
 
         # split file_list among max_workers such that each worker gets approximately the same total number of chunks.
         file_lengths = [self.file_lengths[file] for file in self.file_list]
-        num_chunks_per_file = [round(l / self.chunk_seconds) for l in file_lengths]
+        num_chunks_per_file = [round(length / self.chunk_seconds) for length in file_lengths]
         partitioned_num_chunks, indices = partition_by_sum(num_chunks_per_file, max_workers)
         file_lists = [[self.file_list[i] for i in ids] for ids in indices]
         file_metadatas = [{file: self.file_metadata[file] for file in partition} for partition in file_lists]
@@ -432,7 +436,7 @@ if __name__ == "__main__":
         print(f"Expected files: {len(source_df)}")
         print(f"Files seen: {len(files_seen)}")
         print(
-            f"Expected samples: ",
+            "Expected samples: ",
             sum([math.ceil(ln / datasets.chunk_seconds) for ln in datasets.file_lengths.values()]),
         )
         print(f"Samples seen: {len(samples_seen)}")

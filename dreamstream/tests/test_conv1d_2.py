@@ -1,16 +1,15 @@
 from random import randint
 from uuid import uuid4
-from copy import deepcopy
 import random
 
 import torch
 from torch import nn
 
-from dreamstream import stream_tensor
-from dreamstream.utils.flags import BATCH, LENGTH
+from dreamstream.utils.flags import LENGTH
 from dreamstream.nn.utils import pad_full_sequence, pad_stream_tensor
 from dreamstream.patches import patch_conv_1d
 from dreamstream.data import OutputCollector
+
 
 def random_chunks(full_length):
     chunks = []
@@ -20,6 +19,7 @@ def random_chunks(full_length):
         chunk_sum = sum(chunks)
         remaining = full_length - chunk_sum
     return chunks
+
 
 conv = nn.Conv1d(256, 128, 7, stride=6, padding=3)
 conv = patch_conv_1d(conv)
@@ -54,4 +54,3 @@ for _id, _y in targets.items():
     y = stream_output[_id].tensor()
     abs_diff = (_y - y).abs()
     print(y.size(-1), torch.allclose(_y, y), abs_diff.max().item(), abs_diff.max(0).values[:10].max().item())
-

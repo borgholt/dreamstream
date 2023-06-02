@@ -1,11 +1,12 @@
 
-from typing import Optional, Sequence, List, Union
+from typing import List, Union
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.utils.flags import BATCH, LENGTH
+
 
 def pad_chunks(
     sequences,
