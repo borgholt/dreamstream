@@ -54,6 +54,7 @@ jobs:
 
     - name: Run tests with pytest
       run: |
+        source ./.venv/bin/activate
         pytest -sv --cov --cov-report=term -p no:pytest_wampy tests
 
     # - name: Lint with ruff
