@@ -1,15 +1,14 @@
 from random import randint
 from uuid import uuid4
-from copy import deepcopy
 
 import torch
 from torch import nn
 
-from dreamstream import stream_tensor
-from dreamstream.utils.flags import BATCH, LENGTH
+from dreamstream.utils.flags import LENGTH
 from dreamstream.nn.utils import pad_full_sequence
 from dreamstream.patches import patch_conv_1d
 from dreamstream.data import OutputCollector
+
 
 def random_chunks(full_length):
     chunks = []
@@ -19,6 +18,7 @@ def random_chunks(full_length):
         chunk_sum = sum(chunks)
         remaining = full_length - chunk_sum
     return chunks
+
 
 conv = nn.Conv1d(256, 128, 7, padding=3)
 conv = patch_conv_1d(conv)
@@ -36,10 +36,12 @@ for x in batch.split(chunks, dim=2):
     x = x.drop_empty()
     try:
         y = conv(x)
-    except:
-        import IPython; IPython.embed(using=False)
+    except Exception:
+        import IPython
+
+        IPython.embed(using=False)
     stream_output.update(y)
-    
+
 for _id, _y in targets.items():
     y = stream_output[_id].tensor()
     print(torch.allclose(_y, y), (_y - y).abs().max().item())

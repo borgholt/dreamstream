@@ -1,4 +1,2 @@
-
-
 BATCH = "B"
 LENGTH = "L"
