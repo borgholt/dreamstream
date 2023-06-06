@@ -223,14 +223,42 @@ class StreamMetadata:
         return len(self.ids)
 
     def __repr__(self) -> str:
-        # TODO: Maybe make a more verbose __repr__. For example:
-        # StreamTensor(
-        #     ids=["a", "b", ..., "c"],
-        #     sos=[True, False, ..., False],
-        #     eos=[False, False, ..., True],
-        #     lengths=[10, 20, ..., 30],
-        # )
-        return f"StreamMetadata(size={self.size()})"
+        """Returns a string representation of the StreamMetadata object shortening the ids, sos, eos and lengths 
+        if they are longer than 80 characters.
+
+        StreamTensor(
+            ids=["a", "b", ..., "c"],
+            sos=[True, False, ..., False],
+            eos=[False, False, ..., True],
+            lengths=[10, 20, ..., 30],
+        )
+        """
+        if sum(len(i) for i in self.ids) > 80:
+            # Shorten the ids keeping some first and the last element.
+            last = repr(self.ids[-1])
+            repr_ids = [repr(self.ids[0])]
+            length = len(repr_ids[0]) + len(last) + 7 + len(repr(self.ids[1]))
+            i = 1
+            while length < 80:
+                id_repr = repr(self.ids[i])
+                repr_ids.append(id_repr)
+                length += len(repr(self.ids[i+1])) + 2
+                i += 1
+    
+            short_ids_repr = ", ".join(repr_ids) + ", ..., " + repr(last)
+            print(short_ids_repr, len(short_ids_repr))
+        else:
+            short_ids_repr = repr(self.ids)
+
+        return (
+            "StreamMetadata(\n"
+            f"    ids={short_ids_repr},\n"
+            f"    sos={repr(self.sos)},\n"
+            f"    eos={repr(self.eos)},\n"
+            f"    lengths={repr(self.lengths)},\n"
+            ")"
+        )
+        
 
     def __getitem__(
         self, indices: Union[int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]
@@ -242,22 +270,34 @@ class StreamMetadata:
         self, indices: Union[None, int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
         """Index the metadata along the batch and/or length dimensions."""
-        if isinstance(indices, (list, tuple)) and not all(isinstance(i, (int, bool)) for i in indices):
-            batch_indices, length_indices = indices
-            if batch_indices is None and length_indices is None:
-                return self
-            if batch_indices is not None and length_indices is None:
-                return self.index_batch(batch_indices)
-            if batch_indices is None and length_indices is not None:
-                return self.index_length(length_indices)
-            return self.index_batch(batch_indices).index_length(length_indices)
+        # import IPython
+        # IPython.embed(using=False, header="index")
 
-        return self.index_batch(indices)
+        match indices:
+            case None:
+                return self  # TODO (JDH): Should we return a copy instead?
+            case list() | tuple() if not all(isinstance(i, (int, bool)) for i in indices):
+                match indices:
+                    case (None, None):
+                        return self  # TODO (JDH): Should we return a copy instead?
+                    case (batch_indices, None):
+                        return self.index_batch(batch_indices)
+                    case (None, length_indices):
+                        return self.index_length(length_indices)
+                    case (batch_indices, length_indices):
+                        return self.index_batch(batch_indices).index_length(length_indices)
+            case torch.BoolTensor() if indices.ndim > 1:
+                return self.index_batch_and_length(indices)
+            case int() | slice() | list() | tuple() | torch.Tensor():
+                return self.index_batch(indices)
+            case _:
+                raise TypeError(f"Unsupported index type: {type(indices)}")
 
     def index_batch(
         self, indices: Union[None, int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
-        """Return a StreamMetadata object with the specified batch indices."""
+        """Return a StreamMetadata object with the specified batch indices. Also supports 2-dimension bool tensors for 
+        ."""
         if indices is None:
             return self  # TODO (JDH): Should we return a copy instead?
 
@@ -304,16 +344,18 @@ class StreamMetadata:
             case torch.Tensor() if indices.ndim == 1:
                 return self._index_length_1d_tensor(indices)
             case torch.Tensor() if indices.ndim > 1:
-                raise NotImplementedError("Indexing length with multidimensional torch tensors is not yet implemented.")
-                # if indices.dtype == torch.bool:
-                #     # BoolTensor that has flattened the length dim along with other dims
-                #     # TODO (JDH): Set lengths 1 for any examples that have at least one True value.
-                #     pass
-                # else:
-                #     # IntTensor that creates new dims off of the length dim
-                #     pass
+                raise NotImplementedError("Indexing length with multidimensional torch tensors is not supported.")
             case _:
-                raise NotImplementedError(f"Indexing with {indices} is not supported.")
+                raise NotImplementedError(f"Indexing length with {indices} is not supported.")
+
+    def index_batch_and_length(self, indices: torch.BoolTensor) -> "StreamMetadata":
+        if isinstance(indices, torch.Tensor) and indices.ndim > 2:
+            raise ValueError(f"Expected indices to be a 2-dimensional tensor, but got {indices.ndim} dimensions.")
+
+        import IPython
+        IPython.embed(using=False)
+        lengths = indices.sum(dim=1)
+
 
     def _index_length_int(self, index: int) -> "StreamMetadata":
         # Convert negative indices to positive
@@ -418,7 +460,6 @@ class StreamMetadata:
         Returns:
             StreamMetadata: The concatenated StreamMetadata object.
         """
-
         if len(metas) == 1:
             return deepcopy(metas[0])
 

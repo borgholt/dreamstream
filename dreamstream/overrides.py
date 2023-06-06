@@ -249,7 +249,7 @@ def conv1d(
     return StreamTensor(output, meta), buffer
 
 
-def is_multidimensional_indexing(indices: Union[None, int, slice, List[Any], Tuple[Any, ...]]):
+def is_indexing_multidimensional(indices: Union[None, int, slice, List[Any], Tuple[Any, ...]]):
     """Return True if any of the indices are multidimensional, i.e. not an int, slice, or list/tuple of ints but
     instead a list or tuple of those."""
     return (
@@ -270,7 +270,7 @@ def any_index_is_multidimensional_tensor(indices: Union[None, int, slice, Tensor
     return False
 
 
-def replace_ellipsis(indices: Union[Tuple[Any, ...], List[Any]], ndim: int) -> Union[List[Any]]:
+def replace_ellipsis(indices: Union[Tuple[Any, ...], List[Any]], ndim: int) -> List[Any]:
     if Ellipsis not in indices:
         return indices
 
@@ -314,6 +314,11 @@ def replace_ellipsis(indices: Union[Tuple[Any, ...], List[Any]], ndim: int) -> U
 
     return new_indices
 
+
+def join_dim_names(*names: Union[Tuple[str, ...], List[str]]):
+    """Join dimension names into a single string, separated by underscores."""
+    return "_".join(names)
+    
 
 def determine_dims_affected_by_indexing(
     tensor: StreamTensor,
@@ -372,10 +377,11 @@ def determine_dims_affected_by_indexing(
         return indices, [first_dim], [names[first_dim]] if is_recursive else names
 
     # If indices is a BoolTensor with N>1 dimensions, indexing starts from the first dimension and affects the next
-    # `indices.ndim` dimensions to the right. All affected dimensions are flattened into a single dimension with length
+    # `indices.ndim` dimensions to the right. All affected dimensions are flattened into a single dimension with size
     # equal to the total number of True values in `indices`.
     if isinstance(indices, torch.Tensor) and indices.dtype == torch.bool and indices.ndim > 1:
-        names = (None,) if is_recursive else names[:first_dim] + (None,) + names[first_dim + indices.ndim :]
+        new_name = join_dim_names(*names[first_dim:first_dim + indices.ndim])
+        names = (new_name,) if is_recursive else names[:first_dim] + (new_name,) + names[first_dim + indices.ndim :]
         return indices, list(range(first_dim, first_dim + indices.ndim)), names
 
     # If indices is an IntTensor with N>1 dimensions, N-1 new dimensions are inserted before the first dimension. But
@@ -387,7 +393,7 @@ def determine_dims_affected_by_indexing(
 
     # If indices is a List[Union[int, slice, Tensor, List[int], Tuple[int, ...]]] or a Tuple[Union[int, slice, Tensor,
     # List[int], Tuple[int, ...]], ...], indexing is a number of indexing operations on different dimensions.
-    if is_multidimensional_indexing(indices):
+    if is_indexing_multidimensional(indices):
         # We need to replace Ellipsis with the equivalent number of single-dim slices because it can be used to index
         # multiple dimensions depending on the structure of the other indices.
         indices = replace_ellipsis(indices, len(names))
@@ -423,11 +429,11 @@ def __getitem__(
     multidimensional tensor.
     """
 
-    tensor, meta, names = self.decouple(copy_meta=False)
+    tensor, meta, names = self.decouple(copy_meta=False)  # TODO (JDH): A bit slow.
+    # TODO (JDH): A bit slow.
+    expanded_indices, dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
 
     indexed_tensor = tensor[indices]
-
-    new_indices, dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
 
     if new_names:
         indexed_tensor = indexed_tensor.refine_names(*new_names)
@@ -443,23 +449,39 @@ def __getitem__(
         # Indexing operation does not affect the batch or length dimensions, return the indexed tensor with same meta.
         return StreamTensor(indexed_tensor, meta.clone())
 
-    if any_index_is_multidimensional_tensor(new_indices):
-        import IPython
-        IPython.embed(using=False)
-        msg = "Indexing with a multidimensional tensor that affects the batch or length dimensions is not supported."
-        raise NotImplementedError(msg)
 
+    import IPython
+    IPython.embed(using=False, header="Indexing with multidimensional tensors is not supported.")
     if any_is_length_dim:
         # Get the index that was used along the length dimension of the tensor.
-        length_index = new_indices[length_dim] if is_multidimensional_indexing(new_indices) else new_indices
+        length_index = expanded_indices[length_dim] if is_indexing_multidimensional(expanded_indices) else expanded_indices
     else:
         length_index = None
 
     if any_is_batch_dim:
         # Get the index that was used along the batch dimension of the tensor.
-        batch_index = new_indices[batch_dim] if is_multidimensional_indexing(new_indices) else new_indices
+        batch_index = expanded_indices[batch_dim] if is_indexing_multidimensional(expanded_indices) else expanded_indices
     else:
         batch_index = None
+
+    if any_index_is_multidimensional_tensor(expanded_indices):
+        if indices.dtype == torch.bool:
+            if any_is_batch_dim and not any_is_length_dim:
+                # Reduce with any along all dimensions except the batch dimension.
+                all_but_batch_dim = [dim for dim in range(batch_index.ndim) if dim != batch_dim]
+                batch_index = batch_index.sum(all_but_batch_dim) > 0
+            elif any_is_length_dim and not any_is_batch_dim:
+                # Reduce with any along all dimensions except the length dimension.
+                all_but_length_dim = tuple([dim for dim in range(length_index.ndim) if dim != length_dim])
+                length_index = length_index.sum(all_but_length_dim) > 0
+            elif any_is_batch_dim and any_is_length_dim:
+                # Reduce with any along all dimensions except the batch and length dimensions.
+                all_but_batch_and_length_dim = tuple(
+                    [dim for dim in range(batch_index.ndim) if dim not in (batch_dim, length_dim)]
+                )
+                batch_index = batch_index.sum(all_but_batch_and_length_dim) > 0
+        else:
+            pass
 
     meta = meta[batch_index, length_index]
 
