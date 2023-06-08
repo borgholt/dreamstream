@@ -46,16 +46,12 @@ def implements(torch_function):
 
 
 @implements(torch.cat)
+@implements(torch.concat)
+@implements(torch.concatenate)
 def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     """If dim is the batch dimension of any StreamTensor, assert all are StreamTensors and concatenate the stream
     states as well. Else, call torch.cat.
     """
-
-    # Mirror torch.cat's error messages.
-    for t in tensors:
-        if not (-t.ndim <= dim < t.ndim):
-            raise IndexError(f"Dimension out of range (expected to be in [{-t.ndim}, {t.ndim-1}], but got {dim}.")
-
     if len(tensors) == 1:
         return tensors[0]
 
@@ -63,9 +59,9 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     is_batch_dim = [t.is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]
     if any(is_batch_dim):
         require_all_stream_tensors(tensors, "Cannot concatenate StreamTensor and torch.Tensor along batch dimension.")
-        meta = StreamMetadata.cat_batch([t.meta for t in tensors])  # TODO (JDH): Make this lazily evaluated.
         tensors = [t.named_tensor() for t in tensors]
         tensor = torch.cat(tensors, dim=dim, out=out)
+        meta = StreamMetadata.cat_batch([t.meta for t in tensors])  # TODO (JDH): Make this lazily evaluated.
         return StreamTensor(tensor, meta)
 
     # Concatenation of at least one StreamTensor along the length dimension.
@@ -74,10 +70,10 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
         for t in tensors[:-1]:
             if isinstance(t, StreamTensor) and t.meta.lengths.min() < t.max_length():
                 raise NotImplementedError("Only the last tensor can be padded when concatenating along length.")
-        meta = StreamMetadata.cat_length([t.meta for t in tensors if isinstance(t, StreamTensor)])
-        meta.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])
         tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
         tensor = torch.cat(tensors, dim=dim, out=out)
+        meta = StreamMetadata.cat_length([t.meta for t in tensors if isinstance(t, StreamTensor)])
+        meta.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])
         return StreamTensor(tensor, meta)
 
     # Concatenation along a dimension that is neither batch nor length.
@@ -169,9 +165,6 @@ def chunk(tensor: StreamTensor, chunks: int, dim=0):
     raise NotImplementedError("Chunking is not yet supported.")
 
 
-# TODO: Implement support for narrow - used in unpad_sequence:
-
-
 @implements(torch.nn.functional.pad)
 def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: float = None):
     meta = input.meta
@@ -181,6 +174,32 @@ def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: floa
     output = torch.nn.functional.pad(input, pad, mode=mode, value=value)
     output = output.rename(*names)
     return StreamTensor(output, meta)
+
+
+# indexing, slicing, joining, mutating methods
+@implements(torch.narrow)
+@implements(torch.Tensor.narrow)
+def narrow(input: StreamTensor, dim: int, start: int, length: int):
+    meta = input.meta
+    tensor = input.named_tensor()
+    out = tensor.narrow(dim, start, length)
+
+    if tensor.names[dim] not in (LENGTH, BATCH):
+        return StreamTensor(out, meta.clone())
+
+    if tensor.names[dim] == BATCH:
+        meta = meta[start : start + length]
+    else:
+        meta = meta[:, start : start + length]
+
+    return StreamTensor(out, meta)
+
+
+# @implements(torch.gather)
+# @implements(torch.scatter)
+# @implements(torch.select)
+# @implements(torch.index_select)
+# @implements(torch.where)
 
 
 def _compute_conv_output_lengths(input_lengths: Tensor, kernel_width: int, stride: int):
@@ -581,12 +600,6 @@ def __getitem__(
 # @implements(torch.sort)
 # @implements(torch.topk)
 # @implements(torch.unique)
-
-# indexing, slicing, joining, mutating methods
-# @implements(torch.index)
-# @implements(torch.gather)
-# @implements(torch.scatter)
-# @implements(torch.gather_index)
 
 # moving dimensions
 # @implements(torch.transpose)

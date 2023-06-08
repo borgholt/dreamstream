@@ -269,9 +269,6 @@ class StreamMetadata:
         self, indices: Union[None, int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
         """Index the metadata along the batch and/or length dimensions."""
-        # import IPython
-        # IPython.embed(using=False, header="index")
-
         match indices:
             case None:
                 return self  # TODO (JDH): Should we return a copy instead?
@@ -295,8 +292,8 @@ class StreamMetadata:
     def index_batch(
         self, indices: Union[None, int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
-        """Return a StreamMetadata object with the specified batch indices. Also supports 2-dimension bool tensors for
-        ."""
+        """Return a StreamMetadata object with the specified batch indices."""
+        # TODO (JDH): Implement using match statement instead of if/else.
         if indices is None:
             return self  # TODO (JDH): Should we return a copy instead?
 
@@ -348,6 +345,7 @@ class StreamMetadata:
                 raise IndexError(f"Indexing length with {indices} is not supported.")
 
     def index_batch_and_length(self, indices: torch.BoolTensor) -> "StreamMetadata":
+        """Return a StreamMetadata object with the batch and length indexed with a single 2D BoolTensor."""
         if isinstance(indices, torch.Tensor) and indices.ndim > 2:
             raise ValueError(f"Expected indices to be a 2-dimensional tensor, but got {indices.ndim} dimensions.")
 
