@@ -268,7 +268,6 @@ def get_locations_of_multidimensional_booltensors(indices: Union[List[Any], Tupl
     return indexes
 
 
-
 def replace_ellipsis(indices: Union[Tuple[Any, ...], List[Any]], ndim: int) -> List[Any]:
     """Replace Ellipsis in indices with the equivalent number of slices given the dimensionality of a torch.Tensor."""
     if Ellipsis not in indices:
