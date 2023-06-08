@@ -268,28 +268,6 @@ def get_locations_of_multidimensional_booltensors(indices: Union[List[Any], Tupl
     return indexes
 
 
-def any_index_is_multidimensional_tensor(
-    indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]], depth: int = 0
-):
-    """Return True if any of the indices are a multidimensional tensor."""
-    if isinstance(indices, torch.Tensor) and indices.ndim > 1:
-        return True
-
-    if isinstance(indices, (list, tuple)):
-        return any(any_index_is_multidimensional_tensor(i) for i in indices)
-
-    return False
-
-
-# def expand_indices(indices: Union[Tuple[Any, ...], List[Any]], ndim: int):
-#     """Replace Ellipsis and expand indices to the same dimensionality as the tensor."""
-#     indices = replace_ellipsis(indices, ndim)
-#     if len(indices) < ndim:
-#         indices = list(indices)
-#         indices.extend([slice(None)] * (ndim - len(indices)))
-
-#     return indices
-
 
 def replace_ellipsis(indices: Union[Tuple[Any, ...], List[Any]], ndim: int) -> List[Any]:
     """Replace Ellipsis in indices with the equivalent number of slices given the dimensionality of a torch.Tensor."""
@@ -490,7 +468,6 @@ def __getitem__(
     # X Multidimensional indexing only affecting length
     # X Multidimensional indexing affecting both batch and length
     """
-
     tensor, meta, names = self.decouple(copy_meta=False)  # TODO (JDH): A bit slow.
 
     expanded_indices, affected_dims, names, is_multidim_indexing = determine_dims_affected_by_indexing(self, indices)
