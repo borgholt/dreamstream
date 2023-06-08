@@ -182,8 +182,8 @@ class TestIndexing:
 
 
     def test_batch_indexing_integer(self, stream_tensor_3d):
-        """Indexing with an integer on the batch dim should remove the batch dim and change the meta to have only that one
-        example's metadata."""
+        """Indexing with an integer on the batch dim should remove the batch dim and change the meta to have only that 
+        one example's metadata."""
         s1 = stream_tensor_3d[0]
 
         assert isinstance(s1, StreamTensor)
@@ -246,8 +246,8 @@ class TestIndexing:
 
 
     def test_length_indexing_integer(self, stream_tensor_3d):
-        """Indexing with an integer on the length dim should remove the length dim and change the meta to have lengths 1 or
-        0 depending on padding, and sos only true when the index is 0, and eos only true when the index is the
+        """Indexing with an integer on the length dim should remove the length dim and change the meta to have lengths 1
+        or 0 depending on padding, and sos only true when the index is 0, and eos only true when the index is the
         last non-padding index or beyond (TODO (JDH): Maybe we want eos False if in padding?).
         """
         s2 = stream_tensor_3d[:, :, 0]  # first length index
@@ -400,7 +400,7 @@ class TestIndexing:
         assert s2.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))  # changed to False
-        assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since this was padding.
+        assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but last since this was padding.
         assert s2.names == (BATCH, "F", LENGTH)
 
 
@@ -488,7 +488,7 @@ class TestIndexing:
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
         assert s1.names == (BATCH, dreamstream.overrides.join_dim_names("F", LENGTH))
 
-        indices = torch.tensor([[True, False, False], [True, False, False]])  # remove two last length steps of each feature
+        indices = torch.tensor([[True, False, False], [True, False, False]])  # remove last two steps of each feature
         s2 = stream_tensor_3d[:, indices]
 
         assert isinstance(s2, StreamTensor)
@@ -550,7 +550,7 @@ class TestIndexing:
 
 
     def test_batch_and_length_indexing_3d_booltensor(self, stream_tensor_3d):
-        """Test that we can index a StreamTensor with a 3d bool tensor along the batch, feature and length dimensions."""
+        """Test indexing a StreamTensor with a 3D BoolTensor along the batch, feature and length dimensions."""
         indices = torch.tensor(
             [
                 [
@@ -604,10 +604,10 @@ class TestIndexing:
 
 
     def test_length_indexing_integer_multidimensional(self, stream_tensor_3d):
-        """Indexing with an integer on the length dim should remove the length dim and change the meta to have lengths 1 or
-        0 depending on padding, and sos only true when the index is 0, and eos only true when the index is the
-        last non-padding index or beyond (TODO (JDH): Maybe we want eos False if in padding?).
-        This case also tests that we can simultaneously index the feature dimension without affecting the length indexing.
+        """Indexing with an integer on the length dim should remove the length dim and change the meta to have lengths 1
+        or 0 depending on padding, and sos only true when the index is 0, and eos only true when the index is the last
+        non-padding index or beyond (TODO (JDH): Maybe we want eos False if in padding?). This case also tests that we
+        can simultaneously index the feature dimension without affecting the length indexing.
         """
         s1 = stream_tensor_3d[:, 0, 0]  # first length index and first feature index
 
@@ -621,7 +621,8 @@ class TestIndexing:
 
     def test_length_indexing_slice_multidimensional(self, stream_tensor_3d):
         """Indexing with a slice on the length dim should correctly adjust the meta lengths and sos/eos.
-        This case also tests that we can simultaneously index the feature dimension without affecting the length indexing.
+        This case also tests that we can simultaneously index the feature dimension without affecting the length 
+        indexing.
         """
         s1 = stream_tensor_3d[:, 0, 1:]  # remove first length index and first feature index
 
@@ -634,7 +635,8 @@ class TestIndexing:
 
 
     def test_batch_and_length_indexing_slice(self, stream_tensor_3d):
-        """Indexing with a slice on the batch dim and a slice on the length dim should have the combined effect of both."""
+        """Indexing with a slice on the batch dim and a slice on the length dim should have the combined effect of 
+        both."""
         s1 = stream_tensor_3d[:-1, :, 1:]  # remove last batch index and first length index
 
         assert isinstance(s1, StreamTensor)
