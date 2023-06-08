@@ -223,7 +223,7 @@ class StreamMetadata:
         return len(self.ids)
 
     def __repr__(self) -> str:
-        """Returns a string representation of the StreamMetadata object shortening the ids, sos, eos and lengths 
+        """Returns a string representation of the StreamMetadata object shortening the ids, sos, eos and lengths
         if they are longer than 80 characters.
 
         StreamTensor(
@@ -242,9 +242,9 @@ class StreamMetadata:
             while length < 80:
                 id_repr = repr(self.ids[i])
                 repr_ids.append(id_repr)
-                length += len(repr(self.ids[i+1])) + 2
+                length += len(repr(self.ids[i + 1])) + 2
                 i += 1
-    
+
             short_ids_repr = ", ".join(repr_ids) + ", ..., " + repr(last)
             print(short_ids_repr, len(short_ids_repr))
         else:
@@ -258,7 +258,6 @@ class StreamMetadata:
             f"    lengths={repr(self.lengths)},\n"
             ")"
         )
-        
 
     def __getitem__(
         self, indices: Union[int, slice, List[Any], Tuple[Any, ...], torch.IntTensor, torch.BoolTensor]
@@ -296,13 +295,13 @@ class StreamMetadata:
     def index_batch(
         self, indices: Union[None, int, slice, List[int], Tuple[int, ...], torch.IntTensor, torch.BoolTensor]
     ) -> "StreamMetadata":
-        """Return a StreamMetadata object with the specified batch indices. Also supports 2-dimension bool tensors for 
+        """Return a StreamMetadata object with the specified batch indices. Also supports 2-dimension bool tensors for
         ."""
         if indices is None:
             return self  # TODO (JDH): Should we return a copy instead?
 
         if isinstance(indices, torch.Tensor) and indices.ndim > 1:
-            raise ValueError(f"Expected batch indices to be a 1-dimensional tensor, but got {indices.ndim} dimensions.")
+            raise IndexError(f"Expected batch indices to be a 1-dimensional tensor, but got {indices.ndim} dimensions.")
 
         if isinstance(indices, torch.BoolTensor):
             ids = [id for i, id in enumerate(self.ids) if indices[i]]
@@ -344,18 +343,36 @@ class StreamMetadata:
             case torch.Tensor() if indices.ndim == 1:
                 return self._index_length_1d_tensor(indices)
             case torch.Tensor() if indices.ndim > 1:
-                raise NotImplementedError("Indexing length with multidimensional torch tensors is not supported.")
+                raise IndexError("Indexing length with multidimensional torch tensors is not supported.")
             case _:
-                raise NotImplementedError(f"Indexing length with {indices} is not supported.")
+                raise IndexError(f"Indexing length with {indices} is not supported.")
 
     def index_batch_and_length(self, indices: torch.BoolTensor) -> "StreamMetadata":
         if isinstance(indices, torch.Tensor) and indices.ndim > 2:
             raise ValueError(f"Expected indices to be a 2-dimensional tensor, but got {indices.ndim} dimensions.")
 
-        import IPython
-        IPython.embed(using=False)
-        lengths = indices.sum(dim=1)
+        cumsum = indices.cumsum(dim=1)
+        keep_ids = cumsum[:, -1] > 0
 
+        if not keep_ids.any():
+            return StreamMetadata([], torch.tensor([]), torch.tensor([]), torch.tensor([]))
+
+        if not keep_ids.all():
+            ids = [id for i, id in enumerate(self.ids) if keep_ids[i]]
+            sos = self.sos[keep_ids]
+            eos = self.eos[keep_ids]
+            lengths = self.lengths[keep_ids]
+            indices = indices[keep_ids]
+        else:
+            ids = deepcopy(self.ids)
+            sos = self.sos
+            eos = self.eos
+            lengths = self.lengths
+
+        new_lengths = cumsum[keep_ids, lengths - 1]
+        sos = sos & indices[:, 0]  # SOS only if the first index is included.
+        eos = eos & indices[range(indices.size(0)), lengths - 1]  # EOS only if the last non-padding index is included.
+        return StreamMetadata(ids, sos, eos, new_lengths)
 
     def _index_length_int(self, index: int) -> "StreamMetadata":
         # Convert negative indices to positive
@@ -414,7 +431,7 @@ class StreamMetadata:
         return self._index_length_1d_inttensor(indices)
 
     def _index_length_1d_booltensor(self, indices: torch.BoolTensor) -> "StreamMetadata":
-        return self._index_length_list(indices.nonzero().squeeze().tolist())  # Adds ~10 µs
+        return self._index_length_list(indices.nonzero().squeeze(1).tolist())  # Adds ~10 µs
 
     def _index_length_1d_inttensor(self, indices: torch.IntTensor) -> "StreamMetadata":
         return self._index_length_list(indices.tolist())  # Adds ~1 µs
