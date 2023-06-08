@@ -8,6 +8,7 @@ jupyterlab-git
 more-itertools
 nbstripout
 num2words
+numba
 numpy
 pandas
 pylint

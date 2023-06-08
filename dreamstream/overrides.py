@@ -249,18 +249,76 @@ def conv1d(
     return StreamTensor(output, meta), buffer
 
 
-def is_multidimensional_indexing(indices: Union[None, int, slice, List[Any], Tuple[Any, ...]]):
+def is_indexing_multidimensional(indices: Union[None, int, slice, List[Any], Tuple[Any, ...]]):
     """Return True if any of the indices are multidimensional, i.e. not an int, slice, or list/tuple of ints but
     instead a list or tuple of those."""
-    return isinstance(indices, (list, tuple)) and not all(isinstance(i, (int, bool)) for i in indices)
+    return (
+        indices is Ellipsis
+        or isinstance(indices, (list, tuple))
+        and not all(isinstance(i, (int, bool)) for i in indices)
+    )
 
 
-def any_index_is_multidimensional_tensor(indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]):
-    """Return True if any of the indices are a multidimensional tensor."""
-    if isinstance(indices, torch.Tensor) and indices.ndim > 1:
-        return True
-    if isinstance(indices, (list, tuple)):
-        return any(any_index_is_multidimensional_tensor(i) for i in indices)
+def get_locations_of_multidimensional_booltensors(indices: Union[List[Any], Tuple[Any, ...]]) -> List[int]:
+    """Return the locations (linear index into `indices`) of any multidimensional booltensors"""
+    indexes = []
+    for i, index in enumerate(indices):
+        if isinstance(index, torch.BoolTensor) and index.ndim > 1:
+            indexes.append(i)
+    return indexes
+
+
+def replace_ellipsis(indices: Union[Tuple[Any, ...], List[Any]], ndim: int) -> List[Any]:
+    """Replace Ellipsis in indices with the equivalent number of slices given the dimensionality of a torch.Tensor."""
+    if Ellipsis not in indices:
+        return indices
+
+    # Always act on a list copy of the indices.
+    if isinstance(indices, tuple):
+        new_indices = list(indices)
+    else:
+        new_indices = deepcopy(indices)
+
+    num_ellipsis = new_indices.count(Ellipsis)
+
+    if ndim < len(new_indices) - num_ellipsis:
+        raise IndexError(f"Too many indices for tensor of dimension {ndim}.")
+
+    # If there are more than one Ellipsis, we infer the equivalent number of dimensions covered by each one.
+    if num_ellipsis > 1:
+        # Collapse neighboring Ellipsis into a single Ellipsis
+        ellipsis_indices = [i for i, index in enumerate(new_indices) if index is Ellipsis]
+        for i in reversed(range(num_ellipsis - 1)):
+            if ellipsis_indices[i] + 1 == ellipsis_indices[i + 1]:
+                new_indices[ellipsis_indices[i]] = Ellipsis
+                del new_indices[ellipsis_indices[i] + 1]
+
+        num_ellipsis = new_indices.count(Ellipsis)
+
+        # At this point, we can only handle multiple remaining Ellipsis if they each correspond to one dimension.
+        if num_ellipsis > 1:
+            if len(new_indices) != ndim:
+                if len(new_indices) > ndim:
+                    raise IndexError(f"Too many indices for tensor of dimension {ndim}.")
+                raise IndexError(f"Cannot resolve Ellipsis (got {num_ellipsis} Ellipsis for {ndim} dimensions)")
+
+            # Replace each Ellipsis with a None slice
+            for i in range(num_ellipsis):
+                new_indices[ellipsis_indices[i]] = None
+
+            return new_indices
+
+    # Replace Ellipsis with as many Nones as needed to make the indices have the same length as the tensor
+    ellipsis_index = new_indices.index(Ellipsis)
+    num_missing_indices = ndim - len(new_indices) + 1
+    new_indices = new_indices[:ellipsis_index] + [None] * num_missing_indices + new_indices[ellipsis_index + 1 :]
+
+    return new_indices
+
+
+def join_dim_names(*names: Union[Tuple[str, ...], List[str]]):
+    """Join dimension names into a single string, separated by underscores."""
+    return "_".join(names)
 
 
 def determine_dims_affected_by_indexing(
@@ -270,11 +328,14 @@ def determine_dims_affected_by_indexing(
 ) -> Tuple[List[int], Tuple[str, ...]]:
     """Return the dimensions of the tensor that are affected by indexing with `indices`.
 
-    Also returns the names of the dimensions of the tensor resulting from the indexing. If the indexing operation
-    removes a dimension, the name of that dimension is not included in the returned names. If the indexing operation
-    adds a dimension, the name of that dimension is None.
-
+    Also returns the names of the new dimensions of the tensor that will result from the indexing.
+    - If a dimension is removed, the name of that dimension is not included in the returned names.
+    - If a dimension is added, the name of that dimension is None.
+    - If two or more dimensions are merged into one, the new dimension is named by joining the original names.
     If `recursive_dim` is given, only names of dimensions that are affected and remain after indexing are returned.
+
+    Finally, also returns an updated version of `indices` that has had any Ellipsis replaced with the appropriate
+    number of Nones. This is needed for subsequent indexing into the StreamState.
 
     - int: Selects a single index along the first dimension.
     - slice: Selects a range of indices along the first dimension.
@@ -296,103 +357,193 @@ def determine_dims_affected_by_indexing(
     - slice(None, None, -1): Reverses the first dimension.
     - slice(None, None, -2): Reverses the first dimension and removes every other element.
     """
-
     is_recursive = recursive_dim is not None
-    recursive_dim = 0 if recursive_dim is None else recursive_dim
+    first_dim = 0 if recursive_dim is None else recursive_dim
     names = tensor.names
 
-    # If indices is None, slice(None) or Ellipsis, no dimensions are affected.
-    if indices is None or indices == slice(None) or indices is Ellipsis:
-        return [], [names[recursive_dim]] if is_recursive else names
+    # If indices is None, slice(None), or Ellipsis no dimensions are affected.
+    if indices is None or indices == slice(None):
+        return indices, [], [names[first_dim]] if is_recursive else names, False
+
+    if indices is Ellipsis:
+        if is_recursive:
+            raise RuntimeError("Ellipsis (...) should have been replaced with one or more `None` at this point...")
+        return indices, [], names, False
 
     # If indices is an int or a slice, or a 1D IntTensor, or a 1D BoolTensor, only the first dimension is affected.
-    if isinstance(indices, (int, slice)) or (isinstance(indices, Tensor) and indices.ndim == 1):
+    if isinstance(indices, (int, slice)) or (isinstance(indices, torch.Tensor) and indices.ndim == 1):
         if isinstance(indices, int):
-            return [recursive_dim], [] if is_recursive else [n for i, n in enumerate(names) if i != recursive_dim]
-        return [recursive_dim], [names[recursive_dim]] if is_recursive else names
+            return (
+                indices,
+                [first_dim],
+                [] if is_recursive else [n for i, n in enumerate(names) if i != first_dim],
+                False,
+            )
+        return indices, [first_dim], [names[first_dim]] if is_recursive else names, False
 
     # If indices is a List[int] or a Tuple[int, ...], indexing is coordinate indexing along the first dimension.
     if isinstance(indices, (list, tuple)) and all(isinstance(i, (int, bool)) for i in indices):
-        return [recursive_dim], [names[recursive_dim]] if is_recursive else names
+        return indices, [first_dim], [names[first_dim]] if is_recursive else names, False
 
     # If indices is a BoolTensor with N>1 dimensions, indexing starts from the first dimension and affects the next
-    # `indices.ndim` dimensions to the right. All affected dimensions are flattened into a single dimension with length
+    # `indices.ndim` dimensions to the right. All affected dimensions are flattened into a single dimension with size
     # equal to the total number of True values in `indices`.
     if isinstance(indices, torch.Tensor) and indices.dtype == torch.bool and indices.ndim > 1:
-        names = (None,) if is_recursive else names[:recursive_dim] + (None,) + names[recursive_dim + indices.ndim :]
-        return list(range(recursive_dim, recursive_dim + indices.ndim)), names
+        new_name = join_dim_names(*names[first_dim : first_dim + indices.ndim])
+        names = (new_name,) if is_recursive else (new_name,) + names[first_dim + indices.ndim :]
+        return indices, list(range(first_dim, first_dim + indices.ndim)), names, False
 
     # If indices is an IntTensor with N>1 dimensions, N-1 new dimensions are inserted before the first dimension. But
     # still, only the first dimension is affected.
     if isinstance(indices, torch.Tensor) and not torch.is_floating_point(indices) and indices.ndim > 1:
-        names = (
-            (None,) * (indices.ndim - 1) + (names[recursive_dim],)
-            if is_recursive
-            else (None,) * (indices.ndim - 1) + names
-        )
-        return [recursive_dim], names
+        print(names[first_dim])
+        new_none_dims = (None,) * (indices.ndim - 1)
+        names = new_none_dims + (names[first_dim],) if is_recursive else new_none_dims + names
+        return indices, [first_dim], names, False
 
     # If indices is a List[Union[int, slice, Tensor, List[int], Tuple[int, ...]]] or a Tuple[Union[int, slice, Tensor,
     # List[int], Tuple[int, ...]], ...], indexing is a number of indexing operations on different dimensions.
-    if is_multidimensional_indexing(indices):
-        dims_affected = []
+    if is_indexing_multidimensional(indices):
+        # We need to replace Ellipsis with the equivalent number of single-dim slices because it can be used to index
+        # multiple dimensions depending on the structure of the other indices.
+        # indices = expand_indices(indices, len(names))
+        indices = replace_ellipsis(indices, len(names))
+
+        affected_dims = []
         new_names = []
         for i, index in enumerate(indices):
-            dims, names = determine_dims_affected_by_indexing(tensor, index, recursive_dim=i)
-            dims_affected.extend(dims)
-            new_names.extend(names)
+            _, dims, nms, _ = determine_dims_affected_by_indexing(tensor, index, recursive_dim=i)
+            affected_dims.append(dims)
+            new_names.extend(nms)
 
-        return dims_affected, new_names
+        # Some dimensions may not have been affected by any of the indices. In that case, we need to add their names
+        # to the new names list. We can do this by adding names from the end of the original names list.
+        num_missing = len(names) - len(indices)
+        if isinstance(indices[-1], torch.BoolTensor):
+            num_missing -= indices[-1].ndim - 1  # BoolTensors affect `ndim` dimensions.
 
-    msg = f"Indexing with {indices} is not supported. If you think this is a bug, please open an issue on GitHub."
-    raise NotImplementedError(msg)
+        if num_missing > 0:
+            new_names.extend(names[-num_missing:])
+
+        return indices, affected_dims, new_names, True
+
+    err_msg = f"Indexing with {indices} is not supported. If you think this is a bug, please open an issue on GitHub."
+    raise NotImplementedError(err_msg)
 
 
 @implements(torch.Tensor.__getitem__)
 def __getitem__(
     self: StreamTensor, indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]
 ) -> StreamTensor:
-    meta = self.meta
-    tensor = self.tensor().rename(None)
+    """Index a StreamTensor along any of its dimensions.
+
+    If the indexing operation does not affect the batch or length dimensions it is done as usual and the resulting
+    tensor gets the same names and metadata as the original tensor.
+
+    If the indexing operation affects the batch dimension, the resulting tensor will have metadata only for the
+    files that remain after indexing.
+
+    If the indexing operation affects the length dimension, the resulting tensor will have metadata with potentially
+    different lengths, sos and eos values that reflect whichever length indices were selected.
+
+    The indexing operation will fail if
+    - the length dimension is not indexed chronologically
+    - the batch or length dimension is indexed with a multidimensional integer tensor
+
+
+    # Cases for indexing:
+    # - Any index is a multidimensional tensor
+    #   - Tensor is bool
+    #     - Resolve which dimensions are affected by each multidimensional tensor.
+    #       - Tensor affects only batch and unimportant dimensions
+    #       - Tensor affects only length and unimportant dimensions
+    #       - Tensor affects both batch and length and potentially unimportant dimensions
+    #   - Tensor is integer
+    #     - Adds new dimensions left of the indexed dimension
+    #     - If the indexed dimension is batch or length, this is not allowed.
+    # X Single index on batch
+    # X Single index on length
+    # X Multidimensional indexing only affecting batch
+    # X Multidimensional indexing only affecting length
+    # X Multidimensional indexing affecting both batch and length
+    """
+    tensor, meta, names = self.decouple(copy_meta=False)  # TODO (JDH): A bit slow.
+
+    expanded_indices, affected_dims, names, is_multidim_indexing = determine_dims_affected_by_indexing(self, indices)
+
+    if is_multidim_indexing:
+        dims_affected_flat = [dim for dims in affected_dims for dim in dims]
+    else:
+        dims_affected_flat = affected_dims
+        affected_dims = [affected_dims]
+        expanded_indices = [expanded_indices]
+
     indexed_tensor = tensor[indices]
-
-    dims_affected, new_names = determine_dims_affected_by_indexing(self, indices)
-
-    if new_names:
-        indexed_tensor = indexed_tensor.refine_names(*new_names)
+    if names:
+        indexed_tensor = indexed_tensor.refine_names(*names)
     else:
         indexed_tensor = indexed_tensor.rename(*self.names)
 
     batch_dim = self.batch_dim
     length_dim = self.length_dim
-    any_is_batch_dim = any([dim == batch_dim for dim in dims_affected])
-    any_is_length_dim = any([dim == length_dim for dim in dims_affected])
-    # import IPython
-    # IPython.embed(using=False)
+    is_batch_dim_affected = any([dim == batch_dim for dim in dims_affected_flat])
+    is_length_dim_affected = any([dim == length_dim for dim in dims_affected_flat])
 
-    if any_is_batch_dim or any_is_length_dim:
-        if any_index_is_multidimensional_tensor(indices):
-            msg = "Indexing with a >1D tensor that affects the batch or length dimensions is not supported."
-            raise NotImplementedError(msg)
+    if not (is_batch_dim_affected or is_length_dim_affected):
+        # Indexing operation does not affect the batch or length dimensions, return the indexed tensor with same meta.
+        return StreamTensor(indexed_tensor, meta.clone())
 
-        # TODO (JDH): Handle simultaneous indexing along the batch and length dimensions.
-        # e.g.
-        # >>> meta[index]
-        # where index is Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]] and indexes batch or length or both
-        if any_is_length_dim:
-            # Get the index that was used along the length dimension of the tensor.
-            index = indices[length_dim] if is_multidimensional_indexing(indices) else indices
-            meta = meta.index_length(index)
+    # TODO (JDH): We must know if a single multidimensional tensor affected both batch and length dimensions.
+    # TODO (JDH): We must know which dimension of an ndim tensor is the batch dimension and/or which is the length.
+    # TODO (JDH): Deal with batch_dim to the right of length_dim. Swap them or tranpose a shared BoolTensor.
 
-        if any_is_batch_dim:
-            # Get the index that was used along the batch dimension of the tensor.
-            index = indices[batch_dim] if is_multidimensional_indexing(indices) else indices
-            meta = meta.index_batch(index)
-    else:
-        meta = meta.clone()
+    # Placeholder variables for the indices that affect the batch and/or length dimensions.
+    index = None
+    batch_index = None
+    length_index = None
 
-    stream_tensor = StreamTensor(indexed_tensor, meta)
-    return stream_tensor
+    # Handle multidimensional boolean tensor indexing
+    multidim_booltensor_locations = get_locations_of_multidimensional_booltensors(expanded_indices)
+    if multidim_booltensor_locations:
+        dims_and_indices = [
+            (tensor_loc, affected_dims[tensor_loc], expanded_indices[tensor_loc])
+            for tensor_loc in multidim_booltensor_locations
+        ]  # Keep only multidimensional tensors that affect batch and/or length.
+        for tensor_loc, dims, tensor_index in dims_and_indices:
+            match (batch_dim in dims, length_dim in dims):
+                case (True, True) if tensor_index.ndim == 2:
+                    # No reduction needed, just use the tensor index.
+                    index = tensor_index
+                    break  # No need to continue the loop.
+                case (True, True) if tensor_index.ndim > 2:
+                    # Reduce with any along all dimensions except the batch and length dimensions.
+                    all_but_batch_and_length_dim = [
+                        dim - tensor_loc for dim in dims if dim not in (batch_dim, length_dim)
+                    ]
+                    index = tensor_index.sum(all_but_batch_and_length_dim) > 0
+                    break  # No need to continue the loop.
+                case (True, False):
+                    # Reduce with any along all dimensions except the batch dimension.
+                    all_but_batch_dim = [dim - tensor_loc for dim in dims if dim != batch_dim]
+                    batch_index = tensor_index.sum(all_but_batch_dim) > 0
+                case (False, True):
+                    # Reduce with any along all dimensions except the length dimension.
+                    all_but_length_dim = [dim - tensor_loc for dim in dims if dim != length_dim]
+                    length_index = tensor_index.sum(all_but_length_dim) > 0
+
+        if index is not None:
+            return StreamTensor(indexed_tensor, meta[index])
+
+    # Handle any other indexing operation
+    if length_index is None and is_length_dim_affected:
+        # Get the index that was used along the length dimension of the tensor.
+        length_index = expanded_indices[length_dim] if is_multidim_indexing else expanded_indices[0]
+
+    if batch_index is None and is_batch_dim_affected:
+        # Get the index that was used along the batch dimension of the tensor.
+        batch_index = expanded_indices[batch_dim] if is_multidim_indexing else expanded_indices[0]
+
+    return StreamTensor(indexed_tensor, meta[batch_index, length_index])
 
 
 # @implements(torch.stack)
