@@ -37,8 +37,95 @@ def recouple(func, tensor, *args, **kwargs):
     return as_stream_tensor(data=tensor, meta=meta, names=names)
 
 
-class StreamMetadata:
+class LazyProxy(object):
+    """A proxy class that lazily instantiates an object of type cls with arguments *args and **kwargs."""
+
+    def __init__(self, cls, *args, **kwargs):
+        self.__dict__["_cls"] = cls
+        self.__dict__["_args"] = args
+        self.__dict__["_kwargs"] = kwargs
+        self.__dict__["_obj"] = None
+
+    def __getattr__(self, name):
+        # print("Called: __getattr__", name)
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return getattr(self.__dict__["_obj"], name)
+
+    def __setattr__(self, name, value):
+        # print("Called: __setattr__", name, value)
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        setattr(self.__dict__["_obj"], name, value)
+
+    def __getitem__(self, key):
+        # print("Called: __getitem__", key)
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__getitem__(key)
+
+    def __copy__(self):
+        # print("Called: __copy__")
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__copy__()
+
+    def __eq__(self, other):
+        # print("Called: __eq__", other)
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__eq__(other)
+
+    def __len__(self):
+        # print("Called: __len__")
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__len__()
+
+    def __repr__(self):
+        # print("Called: __repr__")
+        if self.__dict__["_obj"] is None:
+            return f"LazyProxy({self.__dict__['_cls'].__name__}, {self.__dict__['_args']}, {self.__dict__['_kwargs']})"
+        return self.__dict__["_obj"].__repr__()
+
+    def __init_obj(self):
+        # print("Called: __init_obj")
+        self.__dict__["_obj"] = object.__new__(self.__dict__["_cls"])
+        self.__dict__["_obj"].__init__(*self.__dict__["_args"], **self.__dict__["_kwargs"])
+
+
+class LazyInit(object):
+    """A class that lazily initializes its attributes."""
+
+    def __new__(cls, *args, **kwargs):
+        return LazyProxy(cls, *args, **kwargs)
+
+
+class StreamMetadata(LazyInit):
     """Metadata associated with a batch of streamed input tensors."""
+
+    __slots__ = [
+        "ids",
+        "_sos",
+        "_eos",
+        "_lengths",
+        "_min_length",
+        "_max_length",
+        "_lengths_updated",
+        "_any_starting",
+        "_any_ending",
+        "_all_starting",
+        "_all_ending",
+        "_any_starting_or_ending",
+        "_all_starting_and_ending",
+        "_sos_or_eos_updated",
+    ]
 
     def __init__(
         self,
@@ -46,8 +133,10 @@ class StreamMetadata:
         sos: Union[bool, List[bool], torch.BoolTensor],
         eos: Union[bool, List[bool], torch.BoolTensor],
         lengths: Union[int, List[int], torch.IntTensor],
+        _copy_on_init: bool = False,
     ):
-        # TODO: Make initialization lazy such that it only happens when the StreamMetadata is actually used.
+        super().__init__()
+
         if isinstance(ids, str):
             ids = [ids]
         if isinstance(lengths, int):
@@ -60,25 +149,32 @@ class StreamMetadata:
         if not len(ids) == len(lengths) == len(sos) == len(eos):
             raise ValueError("ids, lengths, sos and eos must have the same length.")
 
-        sos = torch.as_tensor(sos, dtype=torch.bool)
-        eos = torch.as_tensor(eos, dtype=torch.bool)
-        lengths = torch.as_tensor(lengths, dtype=torch.int)
+        sos_tensor = torch.as_tensor(sos, dtype=torch.bool)
+        eos_tensor = torch.as_tensor(eos, dtype=torch.bool)
+        lengths_tensor = torch.as_tensor(lengths, dtype=torch.int)
+
+        if _copy_on_init:
+            if sos_tensor is sos:
+                sos_tensor = sos_tensor.clone()
+            if eos_tensor is eos:
+                eos_tensor = eos_tensor.clone()
+            if lengths_tensor is lengths:
+                lengths_tensor = lengths_tensor.clone()
 
         if not all(isinstance(i, str) for i in ids):
             raise ValueError("ids must be a list of strings.")
 
-        if sos.ndim > 1 or eos.ndim > 1 or lengths.ndim > 1:
+        if lengths_tensor.ndim > 1 or eos_tensor.ndim > 1 or lengths_tensor.ndim > 1:
             raise ValueError("sos, eos and lengths must be 1-dimensional.")
 
         self.ids = ids
-        self._sos = sos
-        self._eos = eos
-        self._lengths = lengths
+        self._sos = sos_tensor
+        self._eos = eos_tensor
+        self._lengths = lengths_tensor
 
         self._min_length = None
         self._max_length = None
         self._lengths_updated = True
-        self._update_lengths()
 
         self._any_starting = None
         self._any_ending = None
@@ -87,7 +183,6 @@ class StreamMetadata:
         self._any_starting_or_ending = None
         self._all_starting_and_ending = None
         self._sos_or_eos_updated = True
-        self._update_logicals()
 
     @property
     def sos(self) -> torch.BoolTensor:
@@ -203,10 +298,11 @@ class StreamMetadata:
     def __copy__(self):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
-            ids=deepcopy(self.ids),
-            sos=self.sos.clone(),
-            eos=self.eos.clone(),
-            lengths=self.lengths.clone(),
+            ids=self.ids,
+            sos=self.sos,
+            eos=self.eos,
+            lengths=self.lengths,
+            _copy_on_init=True,
         )
 
     def __eq__(self, other: "StreamMetadata") -> bool:
@@ -246,7 +342,6 @@ class StreamMetadata:
                 i += 1
 
             short_ids_repr = ", ".join(repr_ids) + ", ..., " + repr(last)
-            print(short_ids_repr, len(short_ids_repr))
         else:
             short_ids_repr = repr(self.ids)
 
