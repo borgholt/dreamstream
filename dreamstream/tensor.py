@@ -47,55 +47,47 @@ class LazyProxy(object):
         self.__dict__["_obj"] = None
 
     def __getattr__(self, name):
-        # print("Called: __getattr__", name)
         if self.__dict__["_obj"] is None:
             self.__init_obj()
 
         return getattr(self.__dict__["_obj"], name)
 
     def __setattr__(self, name, value):
-        # print("Called: __setattr__", name, value)
         if self.__dict__["_obj"] is None:
             self.__init_obj()
 
         setattr(self.__dict__["_obj"], name, value)
 
     def __getitem__(self, key):
-        # print("Called: __getitem__", key)
         if self.__dict__["_obj"] is None:
             self.__init_obj()
 
         return self.__dict__["_obj"].__getitem__(key)
 
     def __copy__(self):
-        # print("Called: __copy__")
         if self.__dict__["_obj"] is None:
             self.__init_obj()
 
         return self.__dict__["_obj"].__copy__()
 
     def __eq__(self, other):
-        # print("Called: __eq__", other)
         if self.__dict__["_obj"] is None:
             self.__init_obj()
 
         return self.__dict__["_obj"].__eq__(other)
 
     def __len__(self):
-        # print("Called: __len__")
         if self.__dict__["_obj"] is None:
             self.__init_obj()
 
         return self.__dict__["_obj"].__len__()
 
     def __repr__(self):
-        # print("Called: __repr__")
         if self.__dict__["_obj"] is None:
             return f"LazyProxy({self.__dict__['_cls'].__name__}, {self.__dict__['_args']}, {self.__dict__['_kwargs']})"
         return self.__dict__["_obj"].__repr__()
 
     def __init_obj(self):
-        # print("Called: __init_obj")
         self.__dict__["_obj"] = object.__new__(self.__dict__["_cls"])
         self.__dict__["_obj"].__init__(*self.__dict__["_args"], **self.__dict__["_kwargs"])
 
