@@ -134,7 +134,6 @@ def test_function_coverage():
 ## Indexing functions
 
 class TestNarrow:
-
     def test_narrow_batch(self, stream_tensor_3d):
         """Test `torch.narrow` on a StreamTensor when applied to batch, length, and feature dimensions."""
         s = stream_tensor_3d.narrow(dim=0, start=1, length=2)
@@ -162,6 +161,63 @@ class TestNarrow:
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s.meta.lengths, torch.tensor([2, 2, 1]))
         assert s.names == (BATCH, "F", LENGTH)
+
+
+class TestGather:
+        full_index = torch.tensor([
+            [
+                [1, 0, 1],
+                [0, 1, 1],
+            ],
+            [
+                [0, 1, 1],
+                [1, 0, 1],
+            ],
+            [
+                [1, 0, 1],
+                [0, 1, 1],
+            ]
+        ]
+        )
+        
+        truncated_index = torch.tensor([
+            [
+                [1, 0],
+                [0, 1],
+            ],
+            [
+                [0, 1],
+                [1, 0],
+            ],
+        ]
+        )
+
+        def test_gather_batch(self, stream_tensor_3d):
+            """Test `torch.gather` on a StreamTensor when applied to batch, length, and feature dimensions."""
+            with pytest.raises(IndexError):
+                stream_tensor_3d.gather(dim=0, index=self.full_index)
+    
+        def test_gather_feature(self, stream_tensor_3d):
+            s = stream_tensor_3d.gather(dim=1, index=self.full_index)
+            assert isinstance(s, StreamTensor)
+            assert s.meta.ids == ["first", "middle", "last"]
+            assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
+            assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
+            assert torch.equal(s.meta.lengths, torch.tensor([3, 3, 2]))
+            assert s.names == (BATCH, "F", LENGTH)
+
+        def test_gather_feature_truncated(self, stream_tensor_3d):
+            s = stream_tensor_3d.gather(dim=1, index=self.truncated_index)
+            assert isinstance(s, StreamTensor)
+            assert s.meta.ids == ["first", "middle"]
+            assert torch.equal(s.meta.sos, torch.tensor([True, False]))
+            assert torch.equal(s.meta.eos, torch.tensor([False, False]))
+            assert torch.equal(s.meta.lengths, torch.tensor([2, 2]))
+            assert s.names == (BATCH, "F", LENGTH)
+    
+        def test_gather_length(self, stream_tensor_3d):
+            with pytest.raises(IndexError):
+                stream_tensor_3d.gather(dim=2, index=self.full_index)
 
 
 ## Indexing (__getitem__)

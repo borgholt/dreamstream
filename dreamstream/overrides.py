@@ -180,8 +180,7 @@ def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: floa
 @implements(torch.narrow)
 @implements(torch.Tensor.narrow)
 def narrow(input: StreamTensor, dim: int, start: int, length: int):
-    meta = input.meta
-    tensor = input.named_tensor()
+    tensor, meta = input.named_tensor(), input.meta
     out = tensor.narrow(dim, start, length)
 
     if tensor.names[dim] not in (LENGTH, BATCH):
@@ -195,10 +194,54 @@ def narrow(input: StreamTensor, dim: int, start: int, length: int):
     return StreamTensor(out, meta)
 
 
-# @implements(torch.gather)
+@implements(torch.gather)
+@implements(torch.Tensor.gather)
+def gather(input: StreamTensor, dim: int, index: torch.LongTensor, sparse_grad: bool = False, out: Optional[torch.Tensor] = None):
+    tensor, meta, names = input.decouple()
+    out = torch.gather(tensor,  dim, index, sparse_grad=sparse_grad, out=out)
+    out = out.rename(*names)
+    
+    dim_is_batch_or_length = names[dim] in (LENGTH, BATCH)
+    if dim_is_batch_or_length:
+        # NOTE (JDH): Gathering along the batch dim can result mixing feature or time steps from different sequences.
+        # NOTE (JDH): Gathering along the length dim can result in mixing feature or batch elements over time.
+        raise IndexError("Gathering along the length or batch dimension is currently not supported for StreamTensors.")
+
+    if BATCH in names:
+        batch_dim = names.index(BATCH)
+        index_batch_size = index.size(batch_dim)
+        size_is_full_along_batch = index_batch_size == tensor.size(batch_dim)
+    else:
+        size_is_full_along_batch = True
+
+    if LENGTH in names:
+        length_dim = names.index(LENGTH)
+        index_length_size = index.size(length_dim)
+        size_is_full_along_length = index_length_size == tensor.size(length_dim)
+    else:
+        size_is_full_along_length = True
+
+    if size_is_full_along_batch and size_is_full_along_length:
+        return StreamTensor(out, meta.clone())
+    
+    # Gather removes elements beyond the size of index along the dimensions different from `dim`.
+    batch_index = None if size_is_full_along_batch else slice(None, index_batch_size)
+    length_index = None if size_is_full_along_length else slice(None, index_length_size)
+
+    meta = meta[batch_index, length_index]
+
+    return StreamTensor(out, meta)
+
+
 # @implements(torch.scatter)
-# @implements(torch.select)
+
+# @implements(torch.select)  # Equivalent to slicing with torch.Tensor.__getitem__
+# @implements(torch.select_copy)
+
 # @implements(torch.index_select)
+# @implements(torch.masked_select)
+# @implements(torch.take)
+# @implements(torch.take_along_dim)
 # @implements(torch.where)
 
 
