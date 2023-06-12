@@ -77,3 +77,8 @@ def update_eos_from_integer(eos: np.ndarray, lengths: np.ndarray, index: int) ->
     This is 2x faster than the non-compiled torch method on CPU: `(eos & (lengths <= index + 1))`.
     """
     return eos & (lengths <= index + 1)  # TODO (JDH): Would `self.lengths < indices` be better?
+
+
+@numba.jit(nopython=True)
+def update_eos_from_slice(eos: np.ndarray, lengths: np.ndarray, start: int, stop: int) -> None:
+    return eos & (start < lengths) & (lengths <= stop)

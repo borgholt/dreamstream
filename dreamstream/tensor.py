@@ -16,6 +16,7 @@ from dreamstream.utils.numba import (
     make_indices_positive_,
     minmax,
     update_eos_from_integer,
+    update_eos_from_slice,
     update_lengths_from_list_of_indices,
 )
 
@@ -39,6 +40,23 @@ def recouple(func, tensor, *args, **kwargs):
 
 class StreamMetadata:
     """Metadata associated with a batch of streamed input tensors."""
+
+    __slots__ = [
+        "ids",
+        "_sos",
+        "_eos",
+        "_lengths",
+        "_min_length",
+        "_max_length",
+        "_lengths_updated",
+        "_any_starting",
+        "_any_ending",
+        "_all_starting",
+        "_all_ending",
+        "_any_starting_or_ending",
+        "_all_starting_and_ending",
+        "_sos_or_eos_updated",
+    ]
 
     def __init__(
         self,
@@ -201,6 +219,10 @@ class StreamMetadata:
             self._sos_or_eos_updated = False
 
     def __copy__(self):
+        """Returns a deep of the StreamMetadata object because we don't support shallow copies."""
+        return self.__deepcopy__()
+
+    def __deepcopy__(self):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
             ids=deepcopy(self.ids),
@@ -271,11 +293,11 @@ class StreamMetadata:
         """Index the metadata along the batch and/or length dimensions."""
         match indices:
             case None:
-                return self  # TODO (JDH): Should we return a copy instead?
+                return self.__deepcopy__()
             case list() | tuple() if not all(isinstance(i, (int, bool)) for i in indices):
                 match indices:
                     case (None, None):
-                        return self  # TODO (JDH): Should we return a copy instead?
+                        return self.__deepcopy__()
                     case (batch_indices, None):
                         return self.index_batch(batch_indices)
                     case (None, length_indices):
@@ -284,8 +306,10 @@ class StreamMetadata:
                         return self.index_batch(batch_indices).index_length(length_indices)
             case torch.BoolTensor() if indices.ndim > 1:
                 return self.index_batch_and_length(indices)
-            case int() | slice() | list() | tuple() | torch.Tensor():
+            case torch.Tensor() | int() | slice() | list():
                 return self.index_batch(indices)
+            case tuple() if len(indices) == 2:
+                return self.index_batch(indices[0]).index_length(indices[1])
             case _:
                 raise TypeError(f"Unsupported index type: {type(indices)}")
 
@@ -295,7 +319,7 @@ class StreamMetadata:
         """Return a StreamMetadata object with the specified batch indices."""
         # TODO (JDH): Implement using match statement instead of if/else.
         if indices is None:
-            return self  # TODO (JDH): Should we return a copy instead?
+            return self.__deepcopy__()
 
         if isinstance(indices, torch.Tensor) and indices.ndim > 1:
             raise IndexError(f"Expected batch indices to be a 1-dimensional tensor, but got {indices.ndim} dimensions.")
@@ -330,7 +354,7 @@ class StreamMetadata:
         """Return a StreamMetadata object with the specified length indices."""
         match indices:
             case None:
-                return self  # TODO (JDH): Should we return a copy instead?
+                return self.__deepcopy__()
             case int():
                 return self._index_length_int(indices)
             case slice():
@@ -381,7 +405,7 @@ class StreamMetadata:
         lengths = (self.lengths - index).clamp(min=0, max=1)
         sos = self.sos.clone() if index == 0 else torch.zeros_like(self.sos)
         # TODO (JDH): numba compiled arithmetic is much faster but slowed down due to conversion to/from numpy
-        # Maybe we should store sos and eos as numpy arrays instead of torch tensors?
+        #   Maybe we should store sos and eos as numpy arrays instead of torch tensors?
         eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), self.lengths.numpy(), index))
         return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
 
@@ -402,14 +426,14 @@ class StreamMetadata:
             stop = self.max_length - ((self.max_length - 1 - start) % stride)
             lengths = (self.lengths - start).clip(min=0, max=stop - start).div(stride).ceil().to(self.lengths.dtype)
 
-        sos = self.sos.clone() if start == 0 else torch.zeros_like(self.sos)
-        eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), self.lengths.numpy(), stop - 1))
+        sos = self.sos.clone() if start == 0 and stop > 0 else torch.zeros_like(self.sos)
+        eos = torch.from_numpy(update_eos_from_slice(self.eos.numpy(), self.lengths.numpy(), start, stop))
         return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
 
     def _index_length_list(self, indices: Union[List[int], Tuple[int]]) -> "StreamMetadata":
         # Convert to numpy arrays for faster manipulation and numba jit support.
-        lengths_np = self.lengths.numpy()  # 2 µs
-        indices_np = np.array(indices)  # 2 µs
+        lengths_np = self.lengths.numpy()
+        indices_np = np.array(indices)
         make_indices_positive_(indices_np, self.max_length)  # inplace
 
         # Raise error if the indices are not sorted
@@ -420,7 +444,7 @@ class StreamMetadata:
         min_i, max_i = minmax(indices_np)
         lengths = update_lengths_from_list_of_indices(lengths_np, indices_np)
         sos = self.sos.clone() if min_i == 0 else torch.zeros_like(self.sos)
-        eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), lengths_np, max_i - 1))  # 2 µs
+        eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), lengths_np, max_i - 1))
         return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
 
     def _index_length_1d_tensor(self, indices: torch.Tensor) -> "StreamMetadata":
@@ -547,16 +571,7 @@ class StreamMetadata:
             end = np.cumsum(split_size_or_sections)
             start = np.concatenate(([0], end[:-1]))
 
-        # TODO: Something like this should be the standard for slicing the StreamMetadata object
-        # TODO (JDH): Probably use .index_length() with a slice.
-        def submeta(i, j):
-            lengths = (self.lengths - i).clip(min=0, max=j - i)
-            sos = self.sos.clone() if (j > 0) and (i == 0) else torch.zeros_like(self.sos)
-            eos = (i < self.lengths) & (self.lengths <= j)
-            ids = deepcopy(self.ids)
-            return stream_metadata(ids, sos, eos, lengths)
-
-        return [submeta(i, j) for i, j in zip(start, end)]
+        return [self[:, i:j] for i, j in zip(start, end)]
 
     def unbind_batch(self) -> List["StreamMetadata"]:
         """Split a StreamMetadata object into a list of StreamMetadata objects along the batch dimension.

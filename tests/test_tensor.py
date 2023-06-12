@@ -133,11 +133,13 @@ def test_function_coverage():
 
 ## Indexing functions
 
+
 class TestNarrow:
     def test_narrow_batch(self, stream_tensor_3d):
         """Test `torch.narrow` on a StreamTensor when applied to batch, length, and feature dimensions."""
         s = stream_tensor_3d.narrow(dim=0, start=1, length=2)
         assert isinstance(s, StreamTensor)
+        assert torch.equal(s.tensor(), stream_tensor_3d.tensor().narrow(dim=0, start=1, length=2))
         assert s.meta.ids == ["middle", "last"]
         assert torch.equal(s.meta.sos, torch.tensor([False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, True]))
@@ -147,6 +149,7 @@ class TestNarrow:
     def test_narrow_feature(self, stream_tensor_3d):
         s = stream_tensor_3d.narrow(dim=1, start=1, length=1)
         assert isinstance(s, StreamTensor)
+        assert torch.equal(s.tensor(), stream_tensor_3d.tensor().narrow(dim=1, start=1, length=1))
         assert s.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
@@ -156,6 +159,7 @@ class TestNarrow:
     def test_narrow_length(self, stream_tensor_3d):
         s = stream_tensor_3d.narrow(dim=2, start=1, length=2)
         assert isinstance(s, StreamTensor)
+        assert torch.equal(s.tensor(), stream_tensor_3d.tensor().narrow(dim=2, start=1, length=2))
         assert s.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s.meta.sos, torch.tensor([False, False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
@@ -164,7 +168,8 @@ class TestNarrow:
 
 
 class TestGather:
-        full_index = torch.tensor([
+    full_index = torch.tensor(
+        [
             [
                 [1, 0, 1],
                 [0, 1, 1],
@@ -176,11 +181,12 @@ class TestGather:
             [
                 [1, 0, 1],
                 [0, 1, 1],
-            ]
+            ],
         ]
-        )
-        
-        truncated_index = torch.tensor([
+    )
+
+    truncated_index = torch.tensor(
+        [
             [
                 [1, 0],
                 [0, 1],
@@ -190,116 +196,187 @@ class TestGather:
                 [1, 0],
             ],
         ]
-        )
+    )
 
-        def test_gather_batch(self, stream_tensor_3d):
-            """Test `torch.gather` on a StreamTensor when applied to batch, length, and feature dimensions."""
-            with pytest.raises(IndexError):
-                stream_tensor_3d.gather(dim=0, index=self.full_index)
-    
-        def test_gather_feature(self, stream_tensor_3d):
-            s = stream_tensor_3d.gather(dim=1, index=self.full_index)
-            assert isinstance(s, StreamTensor)
-            assert s.meta.ids == ["first", "middle", "last"]
-            assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
-            assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
-            assert torch.equal(s.meta.lengths, torch.tensor([3, 3, 2]))
-            assert s.names == (BATCH, "F", LENGTH)
+    def test_gather_batch(self, stream_tensor_3d):
+        """Test `torch.gather` on a StreamTensor when applied to batch, length, and feature dimensions."""
+        with pytest.raises(IndexError):
+            stream_tensor_3d.gather(dim=0, index=self.full_index)
 
-        def test_gather_feature_truncated(self, stream_tensor_3d):
-            s = stream_tensor_3d.gather(dim=1, index=self.truncated_index)
-            assert isinstance(s, StreamTensor)
-            assert s.meta.ids == ["first", "middle"]
-            assert torch.equal(s.meta.sos, torch.tensor([True, False]))
-            assert torch.equal(s.meta.eos, torch.tensor([False, False]))
-            assert torch.equal(s.meta.lengths, torch.tensor([2, 2]))
-            assert s.names == (BATCH, "F", LENGTH)
-    
-        def test_gather_length(self, stream_tensor_3d):
-            with pytest.raises(IndexError):
-                stream_tensor_3d.gather(dim=2, index=self.full_index)
+    def test_gather_feature(self, stream_tensor_3d):
+        s = stream_tensor_3d.gather(dim=1, index=self.full_index)
+        assert isinstance(s, StreamTensor)
+        assert torch.equal(s.tensor(), stream_tensor_3d.tensor().gather(dim=1, index=self.full_index))
+        assert s.meta.ids == ["first", "middle", "last"]
+        assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
+        assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
+        assert torch.equal(s.meta.lengths, torch.tensor([3, 3, 2]))
+        assert s.names == (BATCH, "F", LENGTH)
+
+    def test_gather_feature_truncated(self, stream_tensor_3d):
+        s = stream_tensor_3d.gather(dim=1, index=self.truncated_index)
+        assert isinstance(s, StreamTensor)
+        assert torch.equal(s.tensor(), stream_tensor_3d.tensor().gather(dim=1, index=self.truncated_index))
+        assert s.meta.ids == ["first", "middle"]
+        assert torch.equal(s.meta.sos, torch.tensor([True, False]))
+        assert torch.equal(s.meta.eos, torch.tensor([False, False]))
+        assert torch.equal(s.meta.lengths, torch.tensor([2, 2]))
+        assert s.names == (BATCH, "F", LENGTH)
+
+    def test_gather_length(self, stream_tensor_3d):
+        with pytest.raises(IndexError):
+            stream_tensor_3d.gather(dim=2, index=self.full_index)
+
+
+class TestSelect:
+    def test_select_batch(self, stream_tensor_3d):
+        """Test `torch.select` on a StreamTensor when applied to batch, length, and feature dimensions."""
+        s = stream_tensor_3d.select(dim=0, index=1)
+        assert isinstance(s, StreamTensor)
+        assert torch.equal(s.tensor(), stream_tensor_3d.tensor().select(dim=0, index=1))
+        assert s.meta.ids == ["middle"]
+        assert torch.equal(s.meta.sos, torch.tensor([False]))
+        assert torch.equal(s.meta.eos, torch.tensor([False]))
+        assert torch.equal(s.meta.lengths, torch.tensor([3]))
+        assert s.names == ("F", LENGTH)
+
+    def test_select_feature(self, stream_tensor_3d):
+        s = stream_tensor_3d.select(dim=1, index=1)
+        assert isinstance(s, StreamTensor)
+        assert torch.equal(s.tensor(), stream_tensor_3d.tensor().select(dim=1, index=1))
+        assert s.meta.ids == ["first", "middle", "last"]
+        assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
+        assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
+        assert torch.equal(s.meta.lengths, torch.tensor([3, 3, 2]))
+        assert s.names == (BATCH, LENGTH)
+
+    def test_select_length(self, stream_tensor_3d):
+        s = stream_tensor_3d.select(dim=2, index=1)
+        assert isinstance(s, StreamTensor)
+        assert torch.equal(s.tensor(), stream_tensor_3d.tensor().select(dim=2, index=1))
+        assert s.meta.ids == ["first", "middle", "last"]
+        assert torch.equal(s.meta.sos, torch.tensor([False, False, False]))
+        assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
+        assert torch.equal(s.meta.lengths, torch.tensor([1, 1, 1]))
+        assert s.names == (BATCH, "F")
 
 
 ## Indexing (__getitem__)
 
 
-class TestIndexing:
-
+class TestGetitem:
     def test_feature_indexing_integer(self, stream_tensor_3d):
         """Indexing with an integer on the feature dim should remove the feature dim but not change the meta."""
-        s5 = stream_tensor_3d[:, 0, :]
-
-        assert isinstance(s5, StreamTensor)
-        assert s5.meta.ids == ["first", "middle", "last"]
-        assert torch.equal(s5.meta.sos, torch.tensor([True, False, False]))
-        assert torch.equal(s5.meta.eos, torch.tensor([False, False, True]))
-        assert torch.equal(s5.meta.lengths, torch.tensor([3, 3, 2]))
-        assert s5.names == (BATCH, LENGTH)
-
+        s1 = stream_tensor_3d[:, 0, :]
+        assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, 0, :])
+        assert s1.meta.ids == ["first", "middle", "last"]
+        assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
+        assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
+        assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
+        assert s1.names == (BATCH, LENGTH)
 
     def test_batch_indexing_integer(self, stream_tensor_3d):
-        """Indexing with an integer on the batch dim should remove the batch dim and change the meta to have only that 
+        """Indexing with an integer on the batch dim should remove the batch dim and change the meta to have only that
         one example's metadata."""
         s1 = stream_tensor_3d[0]
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[0])
         assert s1.meta.ids == ["first"]  # changed to only the first example
         assert torch.equal(s1.meta.sos, torch.tensor([True]))
         assert torch.equal(s1.meta.eos, torch.tensor([False]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3]))
         assert s1.names == ("F", LENGTH)
 
-
     def test_batch_indexing_slice(self, stream_tensor_3d):
         """Indexing with a slice on the batch dim should remove relevant examples from the meta."""
         s1 = stream_tensor_3d[1:]
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[1:])
         assert s1.meta.ids == ["middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 2]))
         assert s1.names == (BATCH, "F", LENGTH)
 
-
-    def test_batch_indexing_list_tuple(self, stream_tensor_3d):
-        """Indexing with a list or tuple on the batch dim should remove relevant examples from the meta."""
-        s1 = stream_tensor_3d[[0, 2]]
-
+    def test_batch_indexing_tuple(self, stream_tensor_3d):
+        s1 = stream_tensor_3d[(0,)]
         assert isinstance(s1, StreamTensor)
-        assert s1.meta.ids == ["first", "last"]
-        assert torch.equal(s1.meta.sos, torch.tensor([True, False]))
-        assert torch.equal(s1.meta.eos, torch.tensor([False, True]))
-        assert torch.equal(s1.meta.lengths, torch.tensor([3, 2]))
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[(0,)])
+        assert s1.meta.ids == ["first"]
+        assert torch.equal(s1.meta.sos, torch.tensor([True]))
+        assert torch.equal(s1.meta.eos, torch.tensor([False]))
+        assert torch.equal(s1.meta.lengths, torch.tensor([3]))
+        assert s1.names == ("F", LENGTH)
+
+        s2 = stream_tensor_3d[(0, 1)]
+        assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[(0, 1)])
+        assert s2.meta.ids == ["first"]
+        assert torch.equal(s2.meta.sos, torch.tensor([True]))
+        assert torch.equal(s2.meta.eos, torch.tensor([False]))
+        assert torch.equal(s2.meta.lengths, torch.tensor([3]))
+        assert s2.names == (LENGTH,)
+
+        s3 = stream_tensor_3d[(0, 1, 2)]
+        assert isinstance(s3, StreamTensor)
+        assert torch.equal(s3.tensor(), stream_tensor_3d.tensor()[(0, 1, 2)])
+        assert s3.meta.ids == ["first"]
+        assert torch.equal(s3.meta.sos, torch.tensor([False]))
+        assert torch.equal(s3.meta.eos, torch.tensor([False]))
+        assert torch.equal(s3.meta.lengths, torch.tensor([1]))
+        assert s3.names == tuple()
+
+        s4 = stream_tensor_3d[(0, 1, 0)]
+        assert isinstance(s4, StreamTensor)
+        assert torch.equal(s4.tensor(), stream_tensor_3d.tensor()[(0, 1, 0)])
+        assert s4.meta.ids == ["first"]
+        assert torch.equal(s4.meta.sos, torch.tensor([True]))
+        assert torch.equal(s4.meta.eos, torch.tensor([False]))
+        assert torch.equal(s4.meta.lengths, torch.tensor([1]))
+        assert s4.names == tuple()
+
+    def test_batch_indexing_list(self, stream_tensor_3d):
+        """Indexing with a list or tuple on the batch dim should remove relevant examples from the meta."""
+        s1 = stream_tensor_3d[[1]]
+        assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[[1]])
+        assert s1.meta.ids == ["middle"]
+        assert torch.equal(s1.meta.sos, torch.tensor([False]))
+        assert torch.equal(s1.meta.eos, torch.tensor([False]))
+        assert torch.equal(s1.meta.lengths, torch.tensor([3]))
         assert s1.names == (BATCH, "F", LENGTH)
 
+        s2 = stream_tensor_3d[[0, 2]]
+        assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[[0, 2]])
+        assert s2.meta.ids == ["first", "last"]
+        assert torch.equal(s2.meta.sos, torch.tensor([True, False]))
+        assert torch.equal(s2.meta.eos, torch.tensor([False, True]))
+        assert torch.equal(s2.meta.lengths, torch.tensor([3, 2]))
+        assert s2.names == (BATCH, "F", LENGTH)
 
     def test_batch_indexing_booltensor(self, stream_tensor_3d):
         """Indexing with a bool tensor on the batch dim should remove relevant examples from the meta."""
         s1 = stream_tensor_3d[torch.tensor([False, True, True])]
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[torch.tensor([False, True, True])])
         assert s1.meta.ids == ["middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 2]))
         assert s1.names == (BATCH, "F", LENGTH)
-
 
     def test_batch_indexing_inttensor(self, stream_tensor_3d):
         """Indexing with an int tensor on the batch dim should remove relevant examples from the meta."""
-        tensor = stream_tensor_3d
-
-        # Indexing with a bool tensor on the batch dim should remove relevant examples from the meta.
-        s1 = tensor[torch.tensor([1, 2])]
-
+        s1 = stream_tensor_3d[torch.tensor([1, 2])]
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[torch.tensor([1, 2])])
         assert s1.meta.ids == ["middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 2]))
         assert s1.names == (BATCH, "F", LENGTH)
-
 
     def test_length_indexing_integer(self, stream_tensor_3d):
         """Indexing with an integer on the length dim should remove the length dim and change the meta to have lengths 1
@@ -307,8 +384,8 @@ class TestIndexing:
         last non-padding index or beyond (TODO (JDH): Maybe we want eos False if in padding?).
         """
         s2 = stream_tensor_3d[:, :, 0]  # first length index
-
         assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[:, :, 0])
         assert s2.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))  # changed to False
@@ -316,8 +393,8 @@ class TestIndexing:
         assert s2.names == (BATCH, "F")
 
         s3 = stream_tensor_3d[:, :, 1]  # middle length index
-
         assert isinstance(s3, StreamTensor)
+        assert torch.equal(s3.tensor(), stream_tensor_3d.tensor()[:, :, 1])
         assert s3.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s3.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, True]))
@@ -325,14 +402,13 @@ class TestIndexing:
         assert s3.names == (BATCH, "F")
 
         s4 = stream_tensor_3d[:, :, -1]  # last length index
-
         assert isinstance(s4, StreamTensor)
+        assert torch.equal(s4.tensor(), stream_tensor_3d.tensor()[:, :, -1])
         assert s4.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s4.meta.sos, torch.tensor([False, False, False]))  # change to False
         assert torch.equal(s4.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s4.meta.lengths, torch.tensor([1, 1, 0]))  # changed to 1 and 0
         assert s4.names == (BATCH, "F")
-
 
     def test_length_indexing_slice(self, stream_tensor_3d):
         """Indexing with a slice on the length dim should correctly adjust the meta lengths and sos/eos.
@@ -342,51 +418,91 @@ class TestIndexing:
         - the lengths should be minus the number of non-padding tensor elements that are removed.
         """
         s2 = stream_tensor_3d[:, :, 1:]  # remove first length index
-
         assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[:, :, 1:])
         assert s2.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s2.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all)
+        assert s2.names == (BATCH, "F", LENGTH)
 
         s3 = stream_tensor_3d[:, :, :-1]  # remove last length index
-
         assert isinstance(s3, StreamTensor)
+        assert torch.equal(s3.tensor(), stream_tensor_3d.tensor()[:, :, :-1])
         assert s3.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since it was padding
+        assert s3.names == (BATCH, "F", LENGTH)
 
         s4 = stream_tensor_3d[:, :, 1:-1]  # remove first and last length index
-
         assert isinstance(s4, StreamTensor)
+        assert torch.equal(s4.tensor(), stream_tensor_3d.tensor()[:, :, 1:-1])
         assert s4.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s4.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s4.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s4.meta.lengths, torch.tensor([1, 1, 1]))  # minus 2 for all but "last" since it was padding
+        assert s4.names == (BATCH, "F", LENGTH)
 
         s5 = stream_tensor_3d[:, :, :-2]  # remove two last length indices
-
         assert isinstance(s5, StreamTensor)
+        assert torch.equal(s5.tensor(), stream_tensor_3d.tensor()[:, :, :-2])
         assert s5.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s5.meta.sos, torch.tensor([True, False, False]))  # changed to False
         assert torch.equal(s5.meta.eos, torch.tensor([False, False, False]))
         assert torch.equal(s5.meta.lengths, torch.tensor([1, 1, 1]))  # minus 2 for all but "last" since it was padding
+        assert s5.names == (BATCH, "F", LENGTH)
 
         s6 = stream_tensor_3d[:, :, ::2]  # remove every other length index from start to end
-
         assert isinstance(s6, StreamTensor)
+        assert torch.equal(s6.tensor(), stream_tensor_3d.tensor()[:, :, ::2])
         assert s6.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s6.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s6.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s6.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
+        assert s6.names == (BATCH, "F", LENGTH)
 
+    @pytest.mark.parametrize(
+        "indices",
+        [
+            [list((1, 2)), list((0, 2)), list((0, 1))],
+            [tuple((1, 2)), tuple((0, 2)), tuple((0, 1))],
+        ],
+    )
+    def test_length_indexing_tuple_list(self, stream_tensor_3d, indices):
+        """"""
+        s1 = stream_tensor_3d[:, :, indices[0]]  # remove first length index
+        assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, :, indices[0]])
+        assert s1.meta.ids == ["first", "middle", "last"]
+        assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
+        assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
+        assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
+        assert s1.names == (BATCH, "F", LENGTH)
 
-    def test_length_indexing_list_tuple(self, stream_tensor_3d):
+        s2 = stream_tensor_3d[:, :, indices[1]]  # remove middle length index
+        assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[:, :, indices[1]])
+        assert s2.meta.ids == ["first", "middle", "last"]
+        assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
+        assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
+        assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
+        assert s2.names == (BATCH, "F", LENGTH)
+
+        s3 = stream_tensor_3d[:, :, indices[2]]  # remove last length index
+        assert isinstance(s3, StreamTensor)
+        assert torch.equal(s3.tensor(), stream_tensor_3d.tensor()[:, :, indices[2]])
+        assert s3.meta.ids == ["first", "middle", "last"]
+        assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
+        assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
+        assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since was padding
+        assert s3.names == (BATCH, "F", LENGTH)
+
+    def test_length_indexing_list(self, stream_tensor_3d):
         """"""
         s1 = stream_tensor_3d[:, :, [1, 2]]  # remove first length index
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, :, [1, 2]])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
@@ -394,8 +510,8 @@ class TestIndexing:
         assert s1.names == (BATCH, "F", LENGTH)
 
         s2 = stream_tensor_3d[:, :, [0, 2]]  # remove middle length index
-
         assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[:, :, [0, 2]])
         assert s2.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
@@ -403,47 +519,48 @@ class TestIndexing:
         assert s2.names == (BATCH, "F", LENGTH)
 
         s3 = stream_tensor_3d[:, :, [0, 1]]  # remove last length index
-
         assert isinstance(s3, StreamTensor)
+        assert torch.equal(s3.tensor(), stream_tensor_3d.tensor()[:, :, [0, 1]])
         assert s3.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since it was padding
-
+        assert s3.names == (BATCH, "F", LENGTH)
 
     def test_length_indexing_1d_inttensor(self, stream_tensor_3d):
         """"""
         s1 = stream_tensor_3d[:, :, torch.tensor([1, 2])]  # remove first length index
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, :, torch.tensor([1, 2])])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
+        assert s1.names == (BATCH, "F", LENGTH)
 
         s2 = stream_tensor_3d[:, :, torch.tensor([0, 2])]  # remove middle length index
-
         assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[:, :, torch.tensor([0, 2])])
         assert s2.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
+        assert s2.names == (BATCH, "F", LENGTH)
 
         s3 = stream_tensor_3d[:, :, torch.tensor([0, 1])]  # remove last length index
-
         assert isinstance(s3, StreamTensor)
+        assert torch.equal(s3.tensor(), stream_tensor_3d.tensor()[:, :, torch.tensor([0, 1])])
         assert s3.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since it was padding
-
+        assert s3.names == (BATCH, "F", LENGTH)
 
     def test_length_indexing_1d_booltensor(self, stream_tensor_3d):
         """Test that we can index a StreamTensor with a bool tensor (mask)."""
-        # Indexing with a bool tensor on the length dim should correctly adjust the meta lengths and sos/eos.
         s1 = stream_tensor_3d[:, :, torch.tensor([False, True, True])]  # remove first length index
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, :, torch.tensor([False, True, True])])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
@@ -451,20 +568,19 @@ class TestIndexing:
         assert s1.names == (BATCH, "F", LENGTH)
 
         s2 = stream_tensor_3d[:, :, torch.tensor([True, True, False])]  # remove last length index
-
         assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[:, :, torch.tensor([True, True, False])])
         assert s2.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but last since this was padding.
         assert s2.names == (BATCH, "F", LENGTH)
 
-
     def test_indexing_ellipsis(self, stream_tensor_3d):
         """Test that we can index a StreamTensor with an ellipsis."""
         s1_1 = stream_tensor_3d[0, ...]  # keep only first batch example
-
         assert isinstance(s1_1, StreamTensor)
+        assert torch.equal(s1_1.tensor(), stream_tensor_3d.tensor()[0, ...])
         assert s1_1.meta.ids == ["first"]
         assert torch.equal(s1_1.meta.sos, torch.tensor([True]))
         assert torch.equal(s1_1.meta.eos, torch.tensor([False]))
@@ -472,8 +588,8 @@ class TestIndexing:
         assert s1_1.names == ("F", LENGTH)
 
         s1_2 = stream_tensor_3d[0, ..., :]  # keep only first batch example
-
         assert isinstance(s1_2, StreamTensor)
+        assert torch.equal(s1_2.tensor(), stream_tensor_3d.tensor()[0, ..., :])
         assert s1_2.meta.ids == ["first"]
         assert torch.equal(s1_2.meta.sos, torch.tensor([True]))
         assert torch.equal(s1_2.meta.eos, torch.tensor([False]))
@@ -481,8 +597,8 @@ class TestIndexing:
         assert s1_1.names == ("F", LENGTH)
 
         s1_3 = stream_tensor_3d[0, :, ...]  # keep only first batch example
-
         assert isinstance(s1_3, StreamTensor)
+        assert torch.equal(s1_1.tensor(), stream_tensor_3d.tensor()[0, :, ...])
         assert s1_3.meta.ids == ["first"]
         assert torch.equal(s1_3.meta.sos, torch.tensor([True]))
         assert torch.equal(s1_3.meta.eos, torch.tensor([False]))
@@ -490,38 +606,38 @@ class TestIndexing:
         assert s1_1.names == ("F", LENGTH)
 
         s1_4 = stream_tensor_3d[0, ..., ...]  # keep only first batch example
-
         assert isinstance(s1_4, StreamTensor)
+        assert torch.equal(s1_1.tensor(), stream_tensor_3d.tensor()[0, ..., ...])
         assert s1_4.meta.ids == ["first"]
         assert torch.equal(s1_4.meta.sos, torch.tensor([True]))
         assert torch.equal(s1_4.meta.eos, torch.tensor([False]))
         assert torch.equal(s1_4.meta.lengths, torch.tensor([3]))
         assert s1_1.names == ("F", LENGTH)
 
-        s3 = stream_tensor_3d[..., 0]  # keep only first length index
+        s2 = stream_tensor_3d[..., 0]  # keep only first length index
+        assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[..., 0])
+        assert s2.meta.ids == ["first", "middle", "last"]
+        assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
+        assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))  # changed to False
+        assert torch.equal(s2.meta.lengths, torch.tensor([1, 1, 1]))  # set to 1
+        assert s2.names == (BATCH, "F")
 
+        s3 = stream_tensor_3d[..., 0, ...]  # keep only first feature dim
         assert isinstance(s3, StreamTensor)
+        assert torch.equal(s3.tensor(), stream_tensor_3d.tensor()[..., 0, ...])
         assert s3.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
-        assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
-        assert torch.equal(s3.meta.lengths, torch.tensor([1, 1, 1]))  # set to 1
-        assert s3.names == (BATCH, "F")
-
-        s4 = stream_tensor_3d[..., 0, ...]  # keep only first feature dim
-
-        assert isinstance(s4, StreamTensor)
-        assert s4.meta.ids == ["first", "middle", "last"]
-        assert torch.equal(s4.meta.sos, torch.tensor([True, False, False]))
-        assert torch.equal(s4.meta.eos, torch.tensor([False, False, True]))
-        assert torch.equal(s4.meta.lengths, torch.tensor([3, 3, 2]))
-
+        assert torch.equal(s3.meta.eos, torch.tensor([False, False, True]))
+        assert torch.equal(s3.meta.lengths, torch.tensor([3, 3, 2]))
+        assert s3.names == (BATCH, LENGTH)
 
     def test_batch_and_feature_indexing_2d_booltensor(self, stream_tensor_3d):
         """Test that we can index a StreamTensor with a 2d bool tensor along the batch and feature dimensions."""
         indices = torch.tensor([[True, True], [False, True], [True, False]])  # Keep only some features
         s1 = stream_tensor_3d[indices]
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[indices])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
@@ -529,31 +645,28 @@ class TestIndexing:
         assert s1.shape == (4, 3)
         assert s1.names == (dreamstream.overrides.join_dim_names(BATCH, "F"), LENGTH)
 
-
     def test_length_and_feature_indexing_2d_booltensor(self, stream_tensor_3d):
         """Test that we can index a StreamTensor with a 2d bool tensor along the length and feature dimensions."""
-        indices = torch.tensor(
-            [[True, True, True], [True, False, False]]
-        )  # keep all lenghts of one feature and some of other
+        # keep all lenghts of one feature and some of other
+        indices = torch.tensor([[True, True, True], [True, False, False]])
         s1 = stream_tensor_3d[:, indices]
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, indices])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
         assert s1.names == (BATCH, dreamstream.overrides.join_dim_names("F", LENGTH))
 
-        indices = torch.tensor([[True, False, False], [True, False, False]])  # remove last two steps of each feature
+        indices = torch.tensor([[True, False, False], [True, False, False]])  # remove last two time steps of features
         s2 = stream_tensor_3d[:, indices]
-
         assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor()[:, indices])
         assert s2.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))
         assert torch.equal(s2.meta.lengths, torch.tensor([1, 1, 1]))  # changed to 1
         assert s2.names == (BATCH, dreamstream.overrides.join_dim_names("F", LENGTH))
-
 
     def test_batch_and_length_indexing_2d_booltensor(self, stream_tensor_3d):
         """Test that we can index a StreamTensor with a 2d bool tensor along the length and feature dimensions."""
@@ -561,8 +674,8 @@ class TestIndexing:
         indices = torch.tensor([[True, True, True], [True, False, False], [True, True, True]])  # (B, T) = (3, 3)
         s1 = stream_tensor_3d.permute(0, 2, 1)  # (B, F, T) -> (B, T, F)
         s1 = s1[indices]  # (B, T, F) -> (B_T, F)
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor().permute(0, 2, 1)[indices])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
@@ -573,8 +686,8 @@ class TestIndexing:
         indices = torch.tensor([[True, True, True], [False, False, False], [True, True, True]])  # (B, T) = (3, 3)
         s2 = stream_tensor_3d.permute(0, 2, 1)  # (B, F, T) -> (B, T, F)
         s2 = s2[indices]  # (B, T, F) -> (B_T, F)
-
         assert isinstance(s2, StreamTensor)
+        assert torch.equal(s2.tensor(), stream_tensor_3d.tensor().permute(0, 2, 1)[indices])
         assert s2.meta.ids == ["first", "last"]
         assert torch.equal(s2.meta.sos, torch.tensor([True, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, True]))
@@ -584,8 +697,8 @@ class TestIndexing:
         indices = torch.tensor([[False, True, True], [True, False, False], [True, False, False]])  # (B, T) = (3, 3)
         s3 = stream_tensor_3d.permute(0, 2, 1)  # (B, F, T) -> (B, T, F)
         s3 = s3[indices]  # (B, T, F) -> (B_T, F)
-
         assert isinstance(s3, StreamTensor)
+        assert torch.equal(s3.tensor(), stream_tensor_3d.tensor().permute(0, 2, 1)[indices])
         assert s3.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s3.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
@@ -596,14 +709,13 @@ class TestIndexing:
         indices = indices.transpose(0, 1)  # (B, T) -> (T, B)
         s4 = stream_tensor_3d.permute(2, 0, 1)  # (B, F, T) -> (T, B, F)
         s4 = s4[indices]  # (B, T, F) -> (B_T, F)
-
         assert isinstance(s4, StreamTensor)
+        assert torch.equal(s4.tensor(), stream_tensor_3d.tensor().permute(2, 0, 1)[indices])
         assert s4.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s4.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s4.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s4.meta.lengths, torch.tensor([2, 1, 1]))  # changed to 1
         assert s4.names == (dreamstream.overrides.join_dim_names(LENGTH, BATCH), "F")
-
 
     def test_batch_and_length_indexing_3d_booltensor(self, stream_tensor_3d):
         """Test indexing a StreamTensor with a 3D BoolTensor along the batch, feature and length dimensions."""
@@ -624,21 +736,19 @@ class TestIndexing:
             ]
         )  # (B, T) = (3, 3)
         s1 = stream_tensor_3d[indices]  # (B, T, F) -> (B_T, F)
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[indices])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 1, 1]))  # changed to 1
         assert s1.names == (dreamstream.overrides.join_dim_names(BATCH, "F", LENGTH),)
 
-
     def test_feature_indexing_2d_inttensor(self, stream_tensor_3d):
         indices = torch.tensor([[0, 1], [1, 1]])
-
         s1 = stream_tensor_3d[:, indices]
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, indices])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
@@ -646,18 +756,15 @@ class TestIndexing:
         assert s1.names == (BATCH, None, "F", LENGTH)
         assert s1.shape == (3, 2, 2, 3)
 
-
     def test_batch_indexing_2d_inttensor(self, stream_tensor_3d):
         indices = torch.tensor([[0, 1, 2], [0, 1, 2]])
         with pytest.raises(IndexError):
             stream_tensor_3d[indices]
 
-
     def test_length_indexing_2d_inttensor(self, stream_tensor_3d):
         indices = torch.tensor([[0, 1], [1, 1]])
         with pytest.raises(IndexError):
             stream_tensor_3d[..., indices]
-
 
     def test_length_indexing_integer_multidimensional(self, stream_tensor_3d):
         """Indexing with an integer on the length dim should remove the length dim and change the meta to have lengths 1
@@ -666,36 +773,34 @@ class TestIndexing:
         can simultaneously index the feature dimension without affecting the length indexing.
         """
         s1 = stream_tensor_3d[:, 0, 0]  # first length index and first feature index
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, 0, 0])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.lengths, torch.tensor([1, 1, 1]))  # changed to 1
         assert s1.names == (BATCH,)
 
-
     def test_length_indexing_slice_multidimensional(self, stream_tensor_3d):
         """Indexing with a slice on the length dim should correctly adjust the meta lengths and sos/eos.
-        This case also tests that we can simultaneously index the feature dimension without affecting the length 
+        This case also tests that we can simultaneously index the feature dimension without affecting the length
         indexing.
         """
         s1 = stream_tensor_3d[:, 0, 1:]  # remove first length index and first feature index
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:, 0, 1:])
         assert s1.meta.ids == ["first", "middle", "last"]
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
-        assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all)
+        assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
         assert s1.names == (BATCH, LENGTH)
 
-
     def test_batch_and_length_indexing_slice(self, stream_tensor_3d):
-        """Indexing with a slice on the batch dim and a slice on the length dim should have the combined effect of 
+        """Indexing with a slice on the batch dim and a slice on the length dim should have the combined effect of
         both."""
         s1 = stream_tensor_3d[:-1, :, 1:]  # remove last batch index and first length index
-
         assert isinstance(s1, StreamTensor)
+        assert torch.equal(s1.tensor(), stream_tensor_3d.tensor()[:-1, :, 1:])
         assert s1.meta.ids == ["first", "middle"]
         assert torch.equal(s1.meta.sos, torch.tensor([False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False]))
