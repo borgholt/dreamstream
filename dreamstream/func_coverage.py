@@ -24,6 +24,8 @@ RECOUPLE_FUNCTIONS = {
     torch.sigmoid,
     torch.Tensor.sigmoid,
     torch.transpose,
+    torch.where,
+    torch.Tensor.where,
 }
 
 # The full set of functions that are explicitly supported for StreamTensors.

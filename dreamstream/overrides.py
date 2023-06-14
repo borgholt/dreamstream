@@ -1,7 +1,8 @@
 import functools
 from copy import deepcopy
-from typing import Any, Optional, List, Tuple, Union
+from typing import Any, Callable, Optional, List, Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -125,15 +126,27 @@ def split(tensor: StreamTensor, split_size_or_sections: Union[int, List[int]], d
     tensor = tensor.named_tensor()
 
     if tensor.names[dim] in (LENGTH, BATCH):
-        states = meta.split(split_size_or_sections, tensor.names[dim])
+        metas = meta.split(split_size_or_sections, tensor.names[dim])
         tensors = tensor.split(split_size_or_sections, dim=dim)
-        assert len(tensors) == len(states)
-        tensors = [StreamTensor(t, s) for t, s in zip(tensors, states)]
+        assert len(tensors) == len(metas)
+        tensors = [StreamTensor(t, s) for t, s in zip(tensors, metas)]
     else:
         tensors = tensor.split(split_size_or_sections, dim=dim)
         tensors = [StreamTensor(t, meta) for t in tensors]
 
     return tensors
+
+
+# @implements(torch.tensor_split)
+# @implements(torch.Tensor.tensor_split)
+# def tensor_split(tensor: StreamTensor, indices_or_sections: Union[int, List[int]], dim: int = 0):
+#     raise NotImplementedError("tensor_split is not implemented for StreamTensor.")
+
+
+# @implements(torch.chunk)
+# @implements(torch.Tensor.chunk)
+# def chunk(tensor: StreamTensor, chunks: int, dim=0) -> List[StreamTensor]:
+#     raise NotImplementedError("chunk is not implemented for StreamTensor.")
 
 
 @implements(torch.unbind)
@@ -152,7 +165,7 @@ def unbind(tensor: StreamTensor, dim=0):
         states = meta.unbind_batch()
         tensors = tensor.unbind(dim=dim)
         assert len(tensors) == len(states)
-        tensors = [StreamTensor(t, s) for t, s in zip(tensors, states)]
+        tensors = [StreamTensor(t, meta) for t, meta in zip(tensors, states)]
     else:
         tensors = tensor.unbind(dim=dim)
         tensors = [StreamTensor(t, meta) for t in tensors]
@@ -160,20 +173,9 @@ def unbind(tensor: StreamTensor, dim=0):
     return tensors
 
 
-@implements(torch.chunk)
-def chunk(tensor: StreamTensor, chunks: int, dim=0):
-    raise NotImplementedError("Chunking is not yet supported.")
-
-
-@implements(torch.nn.functional.pad)
-def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: float = None):
-    meta = input.meta
-    names = input.names
-    input = input.named_tensor().rename(None)
-    # TODO: Adapt meta
-    output = torch.nn.functional.pad(input, pad, mode=mode, value=value)
-    output = output.rename(*names)
-    return StreamTensor(output, meta)
+# @implements(torch.nn.functional.pad)
+# def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: float = None):
+#     raise NotImplementedError("pad is not currently supported for StreamTensors.")
 
 
 def _compute_conv_output_lengths(input_lengths: Tensor, kernel_width: int, stride: int):
@@ -310,8 +312,13 @@ def replace_ellipsis(indices: Union[Tuple[Any, ...], List[Any]], ndim: int) -> L
 
 
 def join_dim_names(*names: Union[Tuple[str, ...], List[str]]):
-    """Join dimension names into a single string, separated by underscores."""
+    """Join dimension names into a single string, separated by underscores. Inverse of `split_dim_names`."""
     return "_".join(names)
+
+
+def split_dim_names(name: str) -> Tuple[str, ...]:
+    """Split a dimension name into a tuple of strings, separated by underscores. Inverse of `join_dim_names`."""
+    return tuple(name.split("_"))
 
 
 def determine_dims_affected_by_indexing(
@@ -457,22 +464,21 @@ def __getitem__(
     - the length dimension is not indexed chronologically
     - the batch or length dimension is indexed with a multidimensional integer tensor
 
-
-    # Cases for indexing:
-    # - Any index is a multidimensional tensor
-    #   - Tensor is bool
-    #     - Resolve which dimensions are affected by each multidimensional tensor.
-    #       - Tensor affects only batch and unimportant dimensions
-    #       - Tensor affects only length and unimportant dimensions
-    #       - Tensor affects both batch and length and potentially unimportant dimensions
-    #   - Tensor is integer
-    #     - Adds new dimensions left of the indexed dimension
-    #     - If the indexed dimension is batch or length, this is not allowed.
-    # X Single index on batch
-    # X Single index on length
-    # X Multidimensional indexing only affecting batch
-    # X Multidimensional indexing only affecting length
-    # X Multidimensional indexing affecting both batch and length
+    Cases for indexing:
+    - Any index is a multidimensional tensor
+      - Tensor is bool
+        - Resolve which dimensions are affected by each multidimensional tensor.
+          - Tensor affects only batch and unimportant dimensions
+          - Tensor affects only length and unimportant dimensions
+          - Tensor affects both batch and length and potentially unimportant dimensions
+      - Tensor is integer
+        - Adds new dimensions left of the indexed dimension
+        - If the indexed dimension is batch or length, this is not allowed.
+    - Single index on batch
+    - Single index on length
+    - Multidimensional indexing only affecting batch
+    - Multidimensional indexing only affecting length
+    - Multidimensional indexing affecting both batch and length
     """
     tensor, meta, names = self.decouple(copy_meta=False)  # TODO (JDH): A bit slow.
 
@@ -497,10 +503,8 @@ def __getitem__(
         # Indexing operation does not affect the batch or length dimensions, return the indexed tensor with same meta.
         return StreamTensor(indexed_tensor, meta.clone())
 
-    # TODO (JDH): Deal with batch_dim to the right of length_dim. Swap them or tranpose a shared BoolTensor.
-
     # Placeholder variables for the indices that affect the batch and/or length dimensions.
-    index = None
+    index_2d = None
     batch_index = None
     length_index = None
 
@@ -516,29 +520,28 @@ def __getitem__(
             match (batch_dim in dims, length_dim in dims):
                 case (True, False):
                     # Reduce with any along all dimensions except the batch dimension.
-                    all_but_batch_dim = [dim - tensor_loc for dim in dims if dim != batch_dim]
-                    batch_index = any_along_dims(tensor_index, all_but_batch_dim)
+                    non_batch_dims = [dim - tensor_loc for dim in dims if dim != batch_dim]
+                    batch_index = any_along_dims(tensor_index, non_batch_dims)
 
                 case (False, True):
                     # Reduce with any along all dimensions except the length dimension.
-                    all_but_length_dim = [dim - tensor_loc for dim in dims if dim != length_dim]
-                    length_index = any_along_dims(tensor_index, all_but_length_dim)
-
-                case (True, True) if tensor_index.ndim == 2:
-                    # No reduction needed, just use the tensor index.
-                    index = tensor_index
-                    break  # No need to continue the loop.
+                    non_length_dims = [dim - tensor_loc for dim in dims if dim != length_dim]
+                    length_index = any_along_dims(tensor_index, non_length_dims)
 
                 case (True, True) if tensor_index.ndim > 2:
                     # Reduce with any along all dimensions except the batch and length dimensions.
-                    all_but_batch_and_length_dim = [
-                        dim - tensor_loc for dim in dims if dim not in (batch_dim, length_dim)
-                    ]
-                    index = any_along_dims(tensor_index, all_but_batch_and_length_dim)
-                    break  # No need to continue the loop.
+                    non_batch_length_dims = [dim - tensor_loc for dim in dims if dim not in (batch_dim, length_dim)]
+                    index_2d = any_along_dims(tensor_index, non_batch_length_dims)
+                    break  # Found a 2D BoolTensor index on batch and length so remaining indices cannot affect them.
 
-        if index is not None:
-            return StreamTensor(indexed_tensor, meta[index])
+                case _:  # (True, True) if tensor_index.ndim == 2:
+                    index_2d = tensor_index  # No reduction needed, just use the tensor index_2d.
+                    break  # Found a 2D BoolTensor index on batch and length so remaining indices cannot affect them.
+
+        if index_2d is not None:
+            if batch_dim > length_dim:
+                index_2d = index_2d.T  # Transpose if length comes before batch
+            return StreamTensor(indexed_tensor, meta[index_2d])
 
     # Handle any other indexing operation
     if length_index is None and is_length_dim_affected:
@@ -577,51 +580,173 @@ def gather(
     index: torch.LongTensor,
     sparse_grad: bool = False,
     out: Optional[torch.Tensor] = None,
+) -> StreamTensor:
+    return _gather_and_take_along_dim(input, dim, index=index, out=out, sparse_grad=sparse_grad, function=torch.gather)
+
+
+@implements(torch.take_along_dim)
+@implements(torch.Tensor.take_along_dim)
+def take_along_dim(
+    input: StreamTensor,
+    indices: Tensor,
+    dim: int,
+    *,
+    out: Optional[torch.Tensor] = None,
+) -> StreamTensor:
+    """torch.take_along_dim is a wrapper around torch.gather that has slightly different broadcast logic, see
+    https://github.com/pytorch/pytorch/pull/52833."""
+    return _gather_and_take_along_dim(input, dim, indices=indices, out=out, function=torch.take_along_dim)
+
+
+def _gather_and_take_along_dim(
+    input: StreamTensor,
+    dim: int,
+    out: Optional[torch.Tensor] = None,
+    function: Callable = torch.gather,
+    **kwargs,
 ):
     tensor, meta, names = input.decouple()
-    out = torch.gather(tensor, dim, index, sparse_grad=sparse_grad, out=out)
+    out = function(tensor, dim=dim, out=out, **kwargs)
     out = out.rename(*names)
+    index = kwargs.get("index", kwargs.get("indices"))
 
     dim_is_batch_or_length = names[dim] in (LENGTH, BATCH)
     if dim_is_batch_or_length:
-        # NOTE (JDH): Gathering along the batch dim can result mixing feature or time steps from different sequences.
+        # NOTE (JDH): Gathering along the batch dim can result in mixing feature or time steps from different sequences.
         # NOTE (JDH): Gathering along the length dim can result in mixing feature or batch elements over time.
         raise IndexError("Gathering along the length or batch dimension is currently not supported for StreamTensors.")
 
     if BATCH in names:
         batch_dim = names.index(BATCH)
         index_batch_size = index.size(batch_dim)
-        size_is_full_along_batch = index_batch_size == tensor.size(batch_dim)
+        if index_batch_size == tensor.size(batch_dim):
+            batch_index = None
+        else:
+            # Gather removes elements beyond the size of index along the dimensions different from `dim`.
+            batch_index = slice(None, index_batch_size)
     else:
-        size_is_full_along_batch = True
+        batch_index = None
 
     if LENGTH in names:
         length_dim = names.index(LENGTH)
         index_length_size = index.size(length_dim)
-        size_is_full_along_length = index_length_size == tensor.size(length_dim)
+        if index_length_size == tensor.size(length_dim):
+            length_index = None
+        else:
+            length_index = slice(None, index_length_size)
     else:
-        size_is_full_along_length = True
+        length_index = None
 
-    if size_is_full_along_batch and size_is_full_along_length:
+    if batch_index is None and length_index is None:
         return StreamTensor(out, meta.clone())
 
-    # Gather removes elements beyond the size of index along the dimensions different from `dim`.
-    batch_index = None if size_is_full_along_batch else slice(None, index_batch_size)
-    length_index = None if size_is_full_along_length else slice(None, index_length_size)
+    return StreamTensor(out, meta[batch_index, length_index])
 
-    meta = meta[batch_index, length_index]
 
-    return StreamTensor(out, meta)
+@implements(torch.take)
+@implements(torch.Tensor.take)
+def take(input: StreamTensor, indices: Tensor, *, out: Optional[torch.Tensor] = None):
+    tensor, meta, names = input.decouple()
+    out = torch.take(tensor, indices, out=out)
+
+    # Convert linear indices to subscripts (indices along each dimension).
+    subs = np.unravel_index(indices, tensor.size())
+    unique_subs = [list(dict.fromkeys(sub)) for sub in subs]  # remove duplicates, preserve order
+
+    # Find the batch and length indices for meta.
+    new_names = list(names)
+    if BATCH in names:
+        batch_dim = names.index(BATCH)
+        batch_index = unique_subs[batch_dim]
+        if len(batch_index) == 1:
+            del new_names[batch_dim]
+        if len(batch_index) == tensor.size(batch_dim):
+            batch_index = None
+
+    if LENGTH in names:
+        length_dim = names.index(LENGTH)
+        length_index = unique_subs[length_dim]
+        if len(length_index) == 1:
+            del new_names[length_dim]
+        if len(length_index) == tensor.size(length_dim):
+            length_index = None
+
+    out = out.rename(join_dim_names(*new_names))
+
+    if batch_index is None and length_index is None:
+        return StreamTensor(out, meta.clone())
+
+    return StreamTensor(out, meta[batch_index, length_index])
 
 
 @implements(torch.select)
 @implements(torch.Tensor.select)
 @implements(torch.select_copy)
 def select(input: StreamTensor, dim: int, index: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]]):
+    # TODO (JDH): Separate out torch.select and torch.Tensor.select which return views of the original data instead.
     dim = dim if dim >= 0 else input.ndim + dim
     getitem_index = (slice(None),) * dim + (index,)
     return input[*getitem_index]
 
+
+@implements(torch.masked_select)
+def masked_select(input: StreamTensor, mask: Tensor, *, out: Optional[torch.Tensor] = None):
+    tensor, meta, names = input.decouple()
+    out = torch.masked_select(tensor, mask, out=out)
+    out.rename_(join_dim_names(*names))
+    all_but_mask_dims = tuple(i for i in range(tensor.ndim) if i not in (names.index(BATCH), names.index(LENGTH)))
+    meta_mask = any_along_dims(mask, all_but_mask_dims)
+    return StreamTensor(out, meta[meta_mask])
+
+
+@implements(torch.flatten)
+@implements(torch.Tensor.flatten)
+def flatten(input: StreamTensor, start_dim: int = 0, end_dim: int = -1) -> StreamTensor:
+    tensor, meta, names = input.decouple()
+    out = torch.flatten(tensor, start_dim=start_dim, end_dim=end_dim)
+    out.rename_(join_dim_names(*names[start_dim:end_dim]))
+    return StreamTensor(out, meta.clone())
+
+
+@implements(torch.squeeze)
+@implements(torch.Tensor.squeeze)
+def squeeze(input: StreamTensor, dim: Optional[int] = None) -> StreamTensor:
+    tensor, meta, names = input.decouple()
+
+    if dim is None:
+        # dim=None raises `RuntimeError: Please look up dimensions by name, got: name = None.` so we have to do this.
+        tensor = torch.squeeze(tensor)
+    else:
+        tensor = torch.squeeze(tensor, dim=dim)
+
+    if dim is None:
+        # Remove all singleton dimensions.
+        names = list(names)
+        for i in range(tensor.ndim - 1, -1, -1):
+            if input.size(i) == 1:
+                del names[i]
+    elif input.size(dim) == 1:
+        # Remove the specified singleton dimension.
+        names = list(names)
+        del names[dim]
+
+    tensor.rename_(*names)
+    return StreamTensor(tensor, meta.clone())
+
+
+@implements(torch.unsqueeze)
+@implements(torch.Tensor.unsqueeze)
+def unqsqueeze(input: StreamTensor, dim: int) -> StreamTensor:
+    tensor, meta, names = input.decouple()
+    tensor = torch.unsqueeze(tensor, dim=dim)
+    names = list(names)
+    names.insert(dim, None)
+    tensor.rename_(*names)
+    return StreamTensor(tensor, meta.clone())
+
+
+# X @implements(torch.gather)
+# X @implements(torch.narrow)
 
 # @implements(torch.scatter)
 # @implements(torch.diagonal_scatter)
@@ -633,30 +758,27 @@ def select(input: StreamTensor, dim: int, index: Union[None, int, slice, Tensor,
 # @implements(torch.scatter_reduce)
 # @implements(torch.scatter_reduce_)
 
-# @implements(torch.select)  # Equivalent to slicing with torch.Tensor.__getitem__
-# @implements(torch.select_copy)
+# X @implements(torch.select)  # Equivalent to slicing with torch.Tensor.__getitem__
+# X @implements(torch.select_copy)
 
 # @implements(torch.index_select)
-# @implements(torch.masked_select)
-# @implements(torch.take)
-# @implements(torch.take_along_dim)
-# @implements(torch.where)
+# X @implements(torch.masked_select)
+# X @implements(torch.take)
+# X @implements(torch.take_along_dim)
+# X @implements(torch.where)
 
-# @implements(torch.stack)
-# def stack(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
-#     """Create a new dim and name it """
-
-
+# @implements(torch.stack)  # Create a new dim and name it
 # @implements(torch.vstack)
 # @implements(torch.hstack)
 
-# @implements(torch.split)
+# X @implements(torch.split)
 # @implements(torch.chunk)
+# @implements(torch.tensor_split)
 
-# @implements(torch.flatten)
+# X @implements(torch.flatten)
 
-# @implements(torch.squeeze)  # Never remove batch or length dims
-# @implements(torch.unsqueeze)  # Give new dim default name
+# X @implements(torch.squeeze)
+# X @implements(torch.unsqueeze)  # Give new dim default name
 
 # @implements(torch.nn.utils.rnn.pad_sequence)
 # @implements(torch.nn.utils.rnn.unpad_sequence)

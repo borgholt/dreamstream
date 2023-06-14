@@ -46,16 +46,6 @@ def make_indices_positive_(array, max_length: int) -> None:
 
 
 @numba.jit(nopython=True)
-def broadcasted_leq_sum(array1, array2) -> np.ndarray:
-    """Return a 1D array of the number of elements in array1 that are less than or equal to each element in array2.
-
-    This is more than 10x faster than the equivalent torch version on CPU:
-    > (self.lengths.unsqueeze(0) <= indices_t.unsqueeze(1)).sum(dim=0)
-    """
-    return np.sum(np.expand_dims(array1, axis=0) <= np.expand_dims(array2, axis=1), axis=0)
-
-
-@numba.jit(nopython=True)
 def update_lengths_from_list_of_indices(lengths, indices) -> None:
     """For each element in lengths, return the number of elements in indices that are less than that element.
 
