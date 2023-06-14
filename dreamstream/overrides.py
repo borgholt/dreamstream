@@ -686,7 +686,7 @@ def select(input: StreamTensor, dim: int, index: Union[None, int, slice, Tensor,
     # TODO (JDH): Separate out torch.select and torch.Tensor.select which return views of the original data instead.
     dim = dim if dim >= 0 else input.ndim + dim
     getitem_index = (slice(None),) * dim + (index,)
-    return input.__getitem__(*getitem_index)
+    return input.__getitem__(getitem_index)
 
 
 @implements(torch.masked_select)
