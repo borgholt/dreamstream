@@ -309,7 +309,7 @@ class TestTakeAlongDim:
 
     def test_take_along_feature_truncated(self, stream_tensor_3d_fixture):
         with pytest.raises(RuntimeError):
-            s = stream_tensor_3d_fixture.take_along_dim(dim=1, indices=TestGather.truncated_index)
+            stream_tensor_3d_fixture.take_along_dim(dim=1, indices=TestGather.truncated_index)
 
     def test_take_along_length(self, stream_tensor_3d_fixture):
         with pytest.raises(IndexError):
@@ -506,24 +506,28 @@ class TestUnsqueeze:
 
 
 class TestSqueeze:
-    # def test_squeeze_non_singleton_dim(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
-    #     stream_meta_kwargs_fixture["names"] = (BATCH, "F", LENGTH)
-    #     assert_on_indexing_op(
-    #         stream_tensor_3d_fixture,
-    #         torch.squeeze,
-    #         dim=0,
-    #         **stream_meta_kwargs_fixture,
-    #     )
+    def test_squeeze_non_singleton_dim(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
+        stream_meta_kwargs_fixture["names"] = (BATCH, "F", LENGTH)
+        assert_on_indexing_op(
+            stream_tensor_3d_fixture,
+            torch.squeeze,
+            dim=0,
+            **stream_meta_kwargs_fixture,
+        )
 
-    # def test_squeeze_singleton_dim(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
-    #     s = as_stream_tensor(stream_tensor_3d_fixture.tensor().sum(dim=1, keepdim=True), names=stream_tensor_3d_fixture.names, meta=stream_tensor_3d_fixture.meta)
-    #     stream_meta_kwargs_fixture["names"] = (BATCH, LENGTH)
-    #     assert_on_indexing_op(
-    #         s,
-    #         torch.squeeze,
-    #         dim=1,
-    #         **stream_meta_kwargs_fixture,
-    #     )
+    def test_squeeze_singleton_dim(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
+        s = as_stream_tensor(
+            stream_tensor_3d_fixture.tensor().sum(dim=1, keepdim=True),
+            names=stream_tensor_3d_fixture.names,
+            meta=stream_tensor_3d_fixture.meta,
+        )
+        stream_meta_kwargs_fixture["names"] = (BATCH, LENGTH)
+        assert_on_indexing_op(
+            s,
+            torch.squeeze,
+            dim=1,
+            **stream_meta_kwargs_fixture,
+        )
 
     def test_squeeze_all_singleton_dims(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
         names = (None, None) + stream_tensor_3d_fixture.names
