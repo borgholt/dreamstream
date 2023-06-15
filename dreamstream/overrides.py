@@ -10,6 +10,7 @@ from torch import Tensor
 from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.func_coverage import OVERRIDDEN_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
+from dreamstream.warnings import fallback_operation_warning
 
 
 # Wrap whatever functools.update_wrapper usually wraps, except __doc__
@@ -57,7 +58,7 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
         return tensors[0]
 
     # Concatenation of at least one StreamTensor along the batch dimension.
-    is_batch_dim = [t.is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]
+    is_batch_dim = [t.is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]  # TODO (JDH): Speed this up
     if any(is_batch_dim):
         require_all_stream_tensors(tensors, "Cannot concatenate StreamTensor and torch.Tensor along batch dimension.")
         tensors = [t.named_tensor() for t in tensors]
@@ -66,7 +67,7 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
         return StreamTensor(tensor, meta)
 
     # Concatenation of at least one StreamTensor along the length dimension.
-    is_length_dim = [t.is_length_dim(dim) for t in tensors if isinstance(t, StreamTensor)]
+    is_length_dim = [t.is_length_dim(dim) for t in tensors if isinstance(t, StreamTensor)]  # TODO (JDH): Speed this up
     if any(is_length_dim):
         for t in tensors[:-1]:
             if isinstance(t, StreamTensor) and t.meta.lengths.min() < t.max_length():
@@ -89,10 +90,10 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
 
 @implements(torch.permute)
 def permute(tensor: StreamTensor, dims: List[int]):
-    names = [tensor.names[dim] for dim in dims]
+    out = tensor.tensor().permute(*dims)
     meta = tensor.meta
-    tensor = tensor.tensor().permute(*dims)
-    return StreamTensor(tensor, meta).rename(*names)
+    names = [tensor.names[dim] for dim in dims]
+    return StreamTensor(out, meta).rename(*names)
 
 
 @implements(torch.Tensor.permute)
@@ -121,14 +122,13 @@ def tensor_permute(tensor: StreamTensor, *dims: int):
 @implements(torch.Tensor.split)
 @implements(torch.functional.split)
 @implements(torch.split)
-def split(tensor: StreamTensor, split_size_or_sections: Union[int, List[int]], dim: int = 0):
+def split(tensor: StreamTensor, split_size_or_sections: Union[int, List[int]], dim: int = 0) -> List[StreamTensor]:
     meta = tensor.meta
     tensor = tensor.named_tensor()
 
     if tensor.names[dim] in (LENGTH, BATCH):
-        metas = meta.split(split_size_or_sections, tensor.names[dim])
         tensors = tensor.split(split_size_or_sections, dim=dim)
-        assert len(tensors) == len(metas)
+        metas = meta.split(split_size_or_sections, tensor.names[dim])
         tensors = [StreamTensor(t, s) for t, s in zip(tensors, metas)]
     else:
         tensors = tensor.split(split_size_or_sections, dim=dim)
@@ -151,7 +151,7 @@ def split(tensor: StreamTensor, split_size_or_sections: Union[int, List[int]], d
 
 @implements(torch.unbind)
 @implements(torch.Tensor.unbind)
-def unbind(tensor: StreamTensor, dim=0):
+def unbind(tensor: StreamTensor, dim=0) -> List[StreamTensor]:
     if tensor.names[dim] == LENGTH:
         # TODO: Implement this along with "split_length" for the StreamMetadata.
         raise ValueError(
@@ -322,7 +322,7 @@ def split_dim_names(name: str) -> Tuple[str, ...]:
 
 
 def determine_dims_affected_by_indexing(
-    tensor: StreamTensor,
+    names: Tuple[str, ...],
     indices: Union[None, int, slice, Tensor, List[Any], Tuple[Any, ...]],
     recursive_dim: int = None,
 ) -> Tuple[List[int], Tuple[str, ...]]:
@@ -359,7 +359,6 @@ def determine_dims_affected_by_indexing(
     """
     is_recursive = recursive_dim is not None
     first_dim = 0 if recursive_dim is None else recursive_dim
-    names = tensor.names
 
     # If indices is None, slice(None), or Ellipsis no dimensions are affected.
     if indices is None or indices == slice(None):
@@ -412,7 +411,7 @@ def determine_dims_affected_by_indexing(
         affected_dims = []
         new_names = []
         for i, index in enumerate(indices):
-            _, dims, nms, _ = determine_dims_affected_by_indexing(tensor, index, recursive_dim=i)
+            _, dims, nms, _ = determine_dims_affected_by_indexing(names, index, recursive_dim=i)
             affected_dims.append(dims)
             new_names.extend(nms)
 
@@ -480,9 +479,11 @@ def __getitem__(
     - Multidimensional indexing only affecting length
     - Multidimensional indexing affecting both batch and length
     """
-    tensor, meta, names = self.decouple(copy_meta=False)  # TODO (JDH): A bit slow.
+    tensor, meta, names = self.decouple(copy_meta=False)
 
-    expanded_indices, affected_dims, names, is_multidim_indexing = determine_dims_affected_by_indexing(self, indices)
+    indexed_tensor = tensor[indices]
+
+    expanded_indices, affected_dims, names, is_multidim_indexing = determine_dims_affected_by_indexing(names, indices)
 
     if is_multidim_indexing:
         dims_affected_flat = [dim for dims in affected_dims for dim in dims]
@@ -491,9 +492,6 @@ def __getitem__(
         affected_dims = [affected_dims]
         expanded_indices = [expanded_indices]
 
-    indexed_tensor = tensor[indices]
-    indexed_tensor = indexed_tensor.refine_names(*names)
-
     batch_dim = self.batch_dim
     length_dim = self.length_dim
     is_batch_dim_affected = any([dim == batch_dim for dim in dims_affected_flat])
@@ -501,10 +499,10 @@ def __getitem__(
 
     if not (is_batch_dim_affected or is_length_dim_affected):
         # Indexing operation does not affect the batch or length dimensions, return the indexed tensor with same meta.
-        return StreamTensor(indexed_tensor, meta.clone())
+        return StreamTensor(indexed_tensor.refine_names(*names), meta.clone())
 
     # Placeholder variables for the indices that affect the batch and/or length dimensions.
-    index_2d = None
+    batch_length_index = None
     batch_index = None
     length_index = None
 
@@ -528,20 +526,27 @@ def __getitem__(
                     non_length_dims = [dim - tensor_loc for dim in dims if dim != length_dim]
                     length_index = any_along_dims(tensor_index, non_length_dims)
 
+                # TODO (JDH): Simplify the batch+length case, no need for actually computing the index. Just a flag will do.
                 case (True, True) if tensor_index.ndim > 2:
                     # Reduce with any along all dimensions except the batch and length dimensions.
                     non_batch_length_dims = [dim - tensor_loc for dim in dims if dim not in (batch_dim, length_dim)]
-                    index_2d = any_along_dims(tensor_index, non_batch_length_dims)
+                    batch_length_index = any_along_dims(tensor_index, non_batch_length_dims)
                     break  # Found a 2D BoolTensor index on batch and length so remaining indices cannot affect them.
 
                 case _:  # (True, True) if tensor_index.ndim == 2:
-                    index_2d = tensor_index  # No reduction needed, just use the tensor index_2d.
+                    batch_length_index = tensor_index  # No reduction needed, just use the tensor batch_length_index.
                     break  # Found a 2D BoolTensor index on batch and length so remaining indices cannot affect them.
 
-        if index_2d is not None:
+        if batch_length_index is not None:
             if batch_dim > length_dim:
-                index_2d = index_2d.T  # Transpose if length comes before batch
-            return StreamTensor(indexed_tensor, meta[index_2d])
+                batch_length_index = batch_length_index.T  # Transpose if length comes before batch
+
+            fallback_operation_warning(
+                operation="multidimensional boolean tensor indexing",
+                description="when the batch and length dimensions are affected by the indexing operation. "
+                "This would create a mismatch with the StreamMetadata",
+            )
+            return indexed_tensor
 
     # Handle any other indexing operation
     if length_index is None and is_length_dim_affected:
@@ -552,7 +557,7 @@ def __getitem__(
         # Get the index that was used along the batch dimension of the tensor.
         batch_index = expanded_indices[batch_dim] if is_multidim_indexing else expanded_indices[0]
 
-    return StreamTensor(indexed_tensor, meta[batch_index, length_index])
+    return StreamTensor(indexed_tensor.refine_names(*names), meta[batch_index, length_index])
 
 
 # indexing, slicing, joining, mutating methods
@@ -607,13 +612,13 @@ def _gather_and_take_along_dim(
 ):
     tensor, meta, names = input.decouple()
     out = function(tensor, dim=dim, out=out, **kwargs)
-    out = out.rename(*names)
     index = kwargs.get("index", kwargs.get("indices"))
 
     dim_is_batch_or_length = names[dim] in (LENGTH, BATCH)
     if dim_is_batch_or_length:
         # NOTE (JDH): Gathering along the batch dim can result in mixing feature or time steps from different sequences.
         # NOTE (JDH): Gathering along the length dim can result in mixing feature or batch elements over time.
+        # TODO (JDH): Fix this by printing the unsupported_operation_warning and returning a regular tensor.
         raise IndexError("Gathering along the length or batch dimension is currently not supported for StreamTensors.")
 
     if BATCH in names:
@@ -637,6 +642,7 @@ def _gather_and_take_along_dim(
     else:
         length_index = None
 
+    out = out.rename(*names)
     if batch_index is None and length_index is None:
         return StreamTensor(out, meta.clone())
 
@@ -693,10 +699,11 @@ def select(input: StreamTensor, dim: int, index: Union[None, int, slice, Tensor,
 def masked_select(input: StreamTensor, mask: Tensor, *, out: Optional[torch.Tensor] = None):
     tensor, meta, names = input.decouple()
     out = torch.masked_select(tensor, mask, out=out)
-    out.rename_(join_dim_names(*names))
-    all_but_mask_dims = tuple(i for i in range(tensor.ndim) if i not in (names.index(BATCH), names.index(LENGTH)))
-    meta_mask = any_along_dims(mask, all_but_mask_dims)
-    return StreamTensor(out, meta[meta_mask])
+    fallback_operation_warning(
+        operation="masked_select",
+        description="since the StreamTensor becomes 1D which invalidates the link with the StreamMetadata.",
+    )
+    return out
 
 
 @implements(torch.flatten)
@@ -704,7 +711,14 @@ def masked_select(input: StreamTensor, mask: Tensor, *, out: Optional[torch.Tens
 def flatten(input: StreamTensor, start_dim: int = 0, end_dim: int = -1) -> StreamTensor:
     tensor, meta, names = input.decouple()
     out = torch.flatten(tensor, start_dim=start_dim, end_dim=end_dim)
-    out.rename_(join_dim_names(*names[start_dim:end_dim]))
+
+    affected_dims = names[start_dim : end_dim + 1]
+    if BATCH in affected_dims or LENGTH in affected_dims:
+        fallback_operation_warning("flatten", "when applied on the batch and/or length dimensions")
+        return out
+
+    names = names[:start_dim] + (join_dim_names(*affected_dims),) + names[end_dim + 1 :]
+    out.rename_(*names)
     return StreamTensor(out, meta.clone())
 
 
@@ -712,20 +726,19 @@ def flatten(input: StreamTensor, start_dim: int = 0, end_dim: int = -1) -> Strea
 @implements(torch.Tensor.squeeze)
 def squeeze(input: StreamTensor, dim: Optional[int] = None) -> StreamTensor:
     tensor, meta, names = input.decouple()
+    size = tensor.size()
 
+    # dim=None raises: `RuntimeError: Please look up dimensions by name, got: name = None.`, so we have to do this.
     if dim is None:
-        # dim=None raises `RuntimeError: Please look up dimensions by name, got: name = None.` so we have to do this.
         tensor = torch.squeeze(tensor)
     else:
         tensor = torch.squeeze(tensor, dim=dim)
 
     if dim is None:
         # Remove all singleton dimensions.
-        names = list(names)
-        for i in range(tensor.ndim - 1, -1, -1):
-            if input.size(i) == 1:
-                del names[i]
-    elif input.size(dim) == 1:
+        remove = set(names[i] for i, size in enumerate(size) if size == 1)
+        names = [n for n in names if n not in remove]
+    elif size[dim] == 1:
         # Remove the specified singleton dimension.
         names = list(names)
         del names[dim]

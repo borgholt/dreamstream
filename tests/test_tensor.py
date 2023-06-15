@@ -15,6 +15,10 @@ from dreamstream.func_coverage import (
 from dreamstream.overrides import join_dim_names
 
 
+def test_data():
+    return [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]], [[13, 14, 15], [16, 17, 18]]]
+
+
 def test_meta_kwargs():
     return dict(
         ids=["first", "middle", "last"],
@@ -31,13 +35,23 @@ def stream_meta_kwargs_fixture():
 
 def stream_tensor_3d():
     test_meta = stream_metadata(**test_meta_kwargs())
-    test_tensor_data = [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]], [[13, 14, 15], [16, 17, 18]]]
-    return stream_tensor(test_tensor_data, test_meta, names=(BATCH, "F", LENGTH))  # (3, 2, 3)
+    return stream_tensor(test_data(), test_meta, names=(BATCH, "F", LENGTH))  # (3, 2, 3)
 
 
 @pytest.fixture()
 def stream_tensor_3d_fixture():
     return stream_tensor_3d()
+
+
+def stream_tensor_4d():
+    test_meta = stream_metadata(**test_meta_kwargs())
+    test_tensor_data = torch.stack([torch.as_tensor(test_data()), torch.as_tensor(test_data())], dim=2)
+    return stream_tensor(test_tensor_data, test_meta, names=(BATCH, "F", "D", LENGTH))  # (2, 3, 2, 3)
+
+
+@pytest.fixture()
+def stream_tensor_4d_fixture():
+    return stream_tensor_4d()
 
 
 ## Instantiation
@@ -175,7 +189,7 @@ def test_function_coverage():
 ## Indexing functions
 
 
-def assert_on_indexing_op(stream_tensor, func, *args, ids, lengths, sos, eos, names, **kwargs):
+def assert_stream_tensor_and_meta_correct(stream_tensor, func, *args, ids, lengths, sos, eos, names, **kwargs):
     # TODO (JDH): Use this method for all indexing tests to reduce verbosity.
     s = func(stream_tensor, *args, **kwargs)
     t = func(stream_tensor.tensor(), *args, **kwargs)
@@ -188,6 +202,14 @@ def assert_on_indexing_op(stream_tensor, func, *args, ids, lengths, sos, eos, na
     assert s.names == names
 
 
+def assert_tensor_and_nameless(stream_tensor, func, *args, **kwargs):
+    s = func(stream_tensor, *args, **kwargs)
+    t = func(stream_tensor.tensor(), *args, **kwargs)
+    assert isinstance(s, torch.Tensor) and not isinstance(s, StreamTensor)
+    assert torch.equal(s, t)
+    assert s.names == (None,) * s.ndim
+
+
 class TestNarrow:
     def test_narrow_batch(self, stream_tensor_3d_fixture):
         """Test `torch.narrow` on a StreamTensor when applied to batch, length, and feature dimensions."""
@@ -198,7 +220,7 @@ class TestNarrow:
             eos=[False, True],
             names=(BATCH, "F", LENGTH),
         )
-        assert_on_indexing_op(
+        assert_stream_tensor_and_meta_correct(
             stream_tensor_3d_fixture,
             torch.narrow,
             dim=0,
@@ -424,62 +446,49 @@ class TestTake:
 class TestMaskedSelect:
     def test_masked_select_batch(self, stream_tensor_3d_fixture):
         """Masked select on the batch dim keeping only some examples but all other elements."""
-        assert_kwargs = dict(
-            ids=["first", "last"],
-            lengths=[3, 2],
-            sos=[True, False],
-            eos=[False, True],
-            names=(join_dim_names(BATCH, "F", LENGTH),),
-        )
-        assert_on_indexing_op(
+        assert_tensor_and_nameless(
             stream_tensor_3d_fixture,
             torch.masked_select,
             mask=torch.tensor([True, False, True]).unsqueeze(1).unsqueeze(2),
-            **assert_kwargs,
         )
 
     def test_masked_select_feature(self, stream_tensor_3d_fixture):
         """Masked select on the feature dim keeping only some features but all other elements."""
-        assert_kwargs = dict(
-            ids=["first", "middle", "last"],
-            lengths=[3, 3, 2],
-            sos=[True, False, False],
-            eos=[False, False, True],
-            names=(join_dim_names(BATCH, "F", LENGTH),),
-        )
-        assert_on_indexing_op(
+        assert_tensor_and_nameless(
             stream_tensor_3d_fixture,
             torch.masked_select,
             mask=torch.tensor([True, False]).unsqueeze(0).unsqueeze(2),
-            **assert_kwargs,
         )
 
     def test_masked_select_length(self, stream_tensor_3d_fixture):
         """Masked select on the length dim keeping only some lengths but all other elements."""
-        assert_kwargs = dict(
-            ids=["first", "middle", "last"],
-            lengths=[1, 1, 0],
-            sos=[False, False, False],
-            eos=[False, False, True],
-            names=(join_dim_names(BATCH, "F", LENGTH),),
-        )
-        assert_on_indexing_op(
+        assert_tensor_and_nameless(
             stream_tensor_3d_fixture,
             torch.masked_select,
             mask=torch.tensor([False, False, True]).unsqueeze(0).unsqueeze(1),
-            **assert_kwargs,
         )
 
 
-# class TestFlatten:
-#     def test_flatten_batch(self, stream_tensor_3d_fixture):
-#         raise NotImplementedError
+class TestFlatten:
+    def test_flatten_batch(self, stream_tensor_3d_fixture):
+        assert_tensor_and_nameless(stream_tensor_3d_fixture, torch.flatten, start_dim=0, end_dim=1)
+
+    def test_flatten_feature(self, stream_tensor_4d_fixture, stream_meta_kwargs_fixture):
+        stream_meta_kwargs_fixture["names"] = (BATCH, "F_D", LENGTH)
+        
+        assert_stream_tensor_and_meta_correct(
+            stream_tensor_4d_fixture,
+            torch.flatten,
+            start_dim=1,
+            end_dim=2,
+            **stream_meta_kwargs_fixture,
+        )
 
 
 class TestUnsqueeze:
     def test_unsqueeze_single(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
         stream_meta_kwargs_fixture["names"] = (None, BATCH, "F", LENGTH)
-        assert_on_indexing_op(
+        assert_stream_tensor_and_meta_correct(
             stream_tensor_3d_fixture,
             torch.unsqueeze,
             dim=0,
@@ -488,7 +497,7 @@ class TestUnsqueeze:
 
     def test_unsqueeze_two(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
         stream_meta_kwargs_fixture["names"] = (None, None, BATCH, "F", LENGTH)
-        assert_on_indexing_op(
+        assert_stream_tensor_and_meta_correct(
             stream_tensor_3d_fixture.unsqueeze(0),
             torch.unsqueeze,
             dim=0,
@@ -497,7 +506,7 @@ class TestUnsqueeze:
 
     def test_unsqueeze_three(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
         stream_meta_kwargs_fixture["names"] = (None, None, BATCH, None, "F", LENGTH)
-        assert_on_indexing_op(
+        assert_stream_tensor_and_meta_correct(
             stream_tensor_3d_fixture.unsqueeze(0).unsqueeze(2),
             torch.unsqueeze,
             dim=0,
@@ -508,7 +517,7 @@ class TestUnsqueeze:
 class TestSqueeze:
     def test_squeeze_non_singleton_dim(self, stream_tensor_3d_fixture, stream_meta_kwargs_fixture):
         stream_meta_kwargs_fixture["names"] = (BATCH, "F", LENGTH)
-        assert_on_indexing_op(
+        assert_stream_tensor_and_meta_correct(
             stream_tensor_3d_fixture,
             torch.squeeze,
             dim=0,
@@ -522,7 +531,7 @@ class TestSqueeze:
             meta=stream_tensor_3d_fixture.meta,
         )
         stream_meta_kwargs_fixture["names"] = (BATCH, LENGTH)
-        assert_on_indexing_op(
+        assert_stream_tensor_and_meta_correct(
             s,
             torch.squeeze,
             dim=1,
@@ -535,7 +544,7 @@ class TestSqueeze:
             stream_tensor_3d_fixture.unsqueeze(0).unsqueeze(0), names=names, meta=stream_tensor_3d_fixture.meta
         )
         stream_meta_kwargs_fixture["names"] = (BATCH, "F", LENGTH)
-        assert_on_indexing_op(
+        assert_stream_tensor_and_meta_correct(
             s,
             torch.squeeze,
             **stream_meta_kwargs_fixture,
