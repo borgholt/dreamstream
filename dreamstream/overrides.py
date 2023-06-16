@@ -360,7 +360,7 @@ def determine_dims_affected_by_indexing(
     if indices is None:
         updated_names = [None] if is_recursive else (None,) + names
         return IndexingDescription(indices, [], updated_names, False)
- 
+
     # If indices is slice(None), or Ellipsis no dimensions are affected.
     if indices == slice(None):
         updated_names = [names[first_dim]] if is_recursive else names
