@@ -1,5 +1,3 @@
-from typing import Mapping, Sequence
-
 import pytest
 import torch
 
