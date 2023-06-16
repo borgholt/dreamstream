@@ -695,18 +695,6 @@ def masked_select(input: StreamTensor, mask: Tensor, *, out: Optional[torch.Tens
     return out
 
 
-# @implements(torch.diagonal_scatter)
-# @implements(torch.select_scatter)
-# @implements(torch.slice_scatter)
-
-# X @implements(torch.scatter_add)
-# X @implements(torch.Tensor.scatter_add)
-# X @implements(torch.Tensor.scatter_add_)
-# X @implements(torch.scatter_reduce)
-# X @implements(torch.Tensor.scatter_reduce)
-# X @implements(torch.Tensor.scatter_reduce_)
-
-
 @implements(torch.scatter_add)
 @implements(torch.Tensor.scatter_add)
 def scatter_add(

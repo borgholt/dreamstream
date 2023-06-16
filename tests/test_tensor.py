@@ -161,11 +161,35 @@ TEST_INPUTS_RECOUPLE_FUNCTIONS = {
         index=torch.tensor([[0, 1, 2], [0, 1, 2]]),
         src=stream_tensor_bl() * 2,
     ),
+    torch.diagonal_scatter: Inputs(
+        input=stream_tensor_bl(),
+        src=stream_tensor_bl().tensor()[:, 0] * 2,
+        offset=0,
+        dim1=0,
+        dim2=1,
+    ),
+    torch.select_scatter: Inputs(
+        input=stream_tensor_bl(),
+        src=stream_tensor_bl().tensor()[:, 0] * 2,
+        dim=0,
+        index=1,
+    ),
+    torch.slice_scatter: Inputs(
+        input=stream_tensor_bl(),
+        src=stream_tensor_bl().tensor() * 2,
+        dim=0,
+        start=0,
+        end=3,
+        step=1,
+    ),
 }
 
 
 TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.Tensor.scatter_] = TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.scatter]
 TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.Tensor.scatter] = TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.scatter]
+TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.Tensor.diagonal_scatter] = TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.diagonal_scatter]
+TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.Tensor.select_scatter] = TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.select_scatter]
+TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.Tensor.slice_scatter] = TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.slice_scatter]
 
 
 TEST_SKIP_EQUALITY_CHECK = {torch.Tensor.__repr__}
