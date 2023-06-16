@@ -714,7 +714,8 @@ class StreamTensor(torch.Tensor):
 
         # Unhandled functions are passed to the torch.Tensor.__torch_function__ method.
         warnings.warn(
-            f"Function {func.__name__} is not handled by StreamTensor.__torch_function__ and may not work as expected."
+            f"Function `{func.__name__}` is not handled by `StreamTensor.__torch_function__` "
+            "and may not work as expected."
         )
         out = super().__torch_function__(func, types, args, kwargs)
 
