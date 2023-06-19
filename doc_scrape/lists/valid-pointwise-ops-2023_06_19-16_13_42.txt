@@ -31,20 +31,12 @@ Tensor.arctanh_
 Tensor.atan2_
 Tensor.arctan2_
 Tensor.bitwise_not_
-Tensor.bitwise_and_
-Tensor.bitwise_or_
-Tensor.bitwise_xor_
-Tensor.bitwise_left_shift_
-Tensor.bitwise_right_shift_
 ceil_
 Tensor.ceil_
 clamp_
 Tensor.clamp_
 clip_
 Tensor.clip_
-conj_physical_
-Tensor.conj_physical_
-Tensor.copysign_
 cos_
 Tensor.cos_
 cosh_
@@ -61,8 +53,6 @@ Tensor.erfc_
 Tensor.erfinv_
 exp_
 Tensor.exp_
-exp2_
-Tensor.exp2_
 expm1_
 Tensor.expm1_
 fix_
@@ -71,12 +61,10 @@ Tensor.float_power_
 floor_
 Tensor.floor_
 Tensor.floor_divide_
-Tensor.fmod_
 frac_
 Tensor.frac_
 ldexp_
 Tensor.ldexp_
-Tensor.lerp_
 Tensor.lgamma_
 log_
 Tensor.log_
@@ -90,8 +78,6 @@ Tensor.logical_and_
 Tensor.logical_not_
 Tensor.logical_or_
 Tensor.logical_xor_
-logit_
-Tensor.logit_
 Tensor.hypot_
 i0_
 Tensor.i0_
@@ -99,9 +85,6 @@ Tensor.igamma_
 Tensor.igammac_
 Tensor.mul_
 Tensor.multiply_
-Tensor.mvlgamma_
-nan_to_num_
-Tensor.nan_to_num_
 neg_
 Tensor.neg_
 negative_
@@ -113,7 +96,6 @@ rad2deg_
 Tensor.rad2deg_
 reciprocal_
 Tensor.reciprocal_
-Tensor.remainder_
 round_
 Tensor.round_
 rsqrt_
@@ -121,11 +103,8 @@ Tensor.rsqrt_
 sigmoid_
 Tensor.sigmoid_
 Tensor.sign_
-Tensor.sgn_
 sin_
 Tensor.sin_
-sinc_
-Tensor.sinc_
 sinh_
 Tensor.sinh_
 sqrt_
@@ -141,5 +120,3 @@ Tensor.tanh_
 Tensor.true_divide_
 trunc_
 Tensor.trunc_
-xlogy_
-Tensor.xlogy_

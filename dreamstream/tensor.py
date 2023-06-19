@@ -752,6 +752,6 @@ def recouple(func, *args, _tensor_type=StreamTensor, **kwargs):
     return _tensor_type(out, meta_list[0])
 
 
-def inplace_recouple(func, tensor, *args, **kwargs):
-    decouple(func, tensor, *args, **kwargs)
+def inplace_recouple(func, tensor, *args,  _tensor_type=StreamTensor, **kwargs):
+    decouple(func, tensor, *args, _tensor_type=_tensor_type, **kwargs)
     return tensor
