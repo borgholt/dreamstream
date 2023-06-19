@@ -14,9 +14,10 @@ FALLBACK_WARNING = (
     "Instead, the `{operation}` operation will return a regular `torch.Tensor` and subsequent "
     "operations will be performed without the use of the torchstream functionality. If this was "
     "expected, you can suppress this warning by calling `torchstream.suppress_warnings(True)` or by "
-    "converting your input StreamTensor(s) to regular `torch.Tensors` manually before the call "
-    "to `{operation}`. If this was unexpected it might have lead to an error being raised and "
-    "might indicate an error in your code. Otherwise, please open an issue on GitHub."
+    "converting your input StreamTensor(s) to regular `torch.Tensors` manually before passing them to "
+    "the `{operation}` operation. If this was unexpected it might have lead to an error being raised and "
+    "might indicate an error in your code. If you got an error and think it's a bug in TorchStream, please "
+    "open an issue on GitHub."
 )
 
 REASON_METADATA_AMBIGUOUS = "since combining the StreamMetadata of the inputs is ambiguous"
@@ -24,7 +25,9 @@ REASON_METADATA_AMBIGUOUS = "since combining the StreamMetadata of the inputs is
 
 def fallback_operation_warning(operation: str, description: str = ""):
     warnings.warn(
-        FALLBACK_WARNING.format(operation=operation, description=description), TorchStreamFallbackWarning, stacklevel=2
+        FALLBACK_WARNING.format(operation=operation, description=" " + description if description else ""),
+        TorchStreamFallbackWarning,
+        stacklevel=2,
     )
 
 

@@ -479,7 +479,7 @@ class StreamMetadata:
 
         # Raise error if the indices are not sorted
         if not is_sorted_ascending(indices_np):
-            raise RuntimeError("Indices must be sorted when indexing length with lists or tuples.")
+            raise IndexError("Indices must be sorted when indexing length with lists or tuples.")
 
         # Update lengths, sos, and eos
         min_i, max_i = minmax(indices_np)

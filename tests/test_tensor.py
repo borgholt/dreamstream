@@ -1,3 +1,5 @@
+import collections
+
 import pytest
 import torch
 
@@ -162,20 +164,20 @@ TEST_INPUTS_RECOUPLE_FUNCTIONS = {
         src=stream_tensor_bl() * 2,
     ),
     torch.diagonal_scatter: Inputs(
-        input=stream_tensor_bl(),
+        stream_tensor_bl(),
         src=stream_tensor_bl().tensor()[:, 0] * 2,
         offset=0,
         dim1=0,
         dim2=1,
     ),
     torch.select_scatter: Inputs(
-        input=stream_tensor_bl(),
+        stream_tensor_bl(),
         src=stream_tensor_bl().tensor()[:, 0] * 2,
         dim=0,
         index=1,
     ),
     torch.slice_scatter: Inputs(
-        input=stream_tensor_bl(),
+        stream_tensor_bl(),
         src=stream_tensor_bl().tensor() * 2,
         dim=0,
         start=0,
@@ -197,16 +199,19 @@ TEST_SKIP_EQUALITY_CHECK = {torch.Tensor.__repr__}
 
 def test_valid_coupled_recoupled_functions():
     """Iterate over all valid, coupled and recoupled functions and check that they work as expected."""
+    INPUTS = collections.defaultdict(Inputs)
+    INPUTS.update(TEST_INPUTS_VALID_FUNCTIONS | TEST_INPUTS_DECOUPLE_FUNCTIONS | TEST_INPUTS_RECOUPLE_FUNCTIONS)
+
     FUNCTIONS = VALID_FUNCTIONS | DECOUPLE_FUNCTIONS | RECOUPLE_FUNCTIONS
-    INPUTS = TEST_INPUTS_VALID_FUNCTIONS | TEST_INPUTS_DECOUPLE_FUNCTIONS | TEST_INPUTS_RECOUPLE_FUNCTIONS
 
     failed = []
-    for f, (args, kwargs) in INPUTS.items():
+    for function in FUNCTIONS:
         try:
-            stream_tensor_out = f(*args, **kwargs)
-            torch_tensor_out = f(*to_torch_tensor_recursive(args), **to_torch_tensor_recursive(kwargs))
+            args, kwargs = INPUTS[function]
+            stream_tensor_out = function(*args, **kwargs)
+            torch_tensor_out = function(*to_torch_tensor_recursive(args), **to_torch_tensor_recursive(kwargs))
 
-            if f in TEST_SKIP_EQUALITY_CHECK:
+            if function in TEST_SKIP_EQUALITY_CHECK:
                 continue
 
             if isinstance(torch_tensor_out, torch.Tensor):
@@ -217,19 +222,11 @@ def test_valid_coupled_recoupled_functions():
                 assert stream_tensor_out == torch_tensor_out
 
         except Exception as e:
-            failed.append((f, e))
+            failed.append((function, e))
 
-    err = ""
     if any(failed):
         failed_str = " - " + "\n\n - ".join([f"{f.__name__}: {e}" for f, e in failed])
-        err += f"The following functions claimed to be valid, were not:\n{failed_str}"
-
-    untested_functions = FUNCTIONS - set(INPUTS.keys())
-    if untested_functions:
-        untested_str = " - " + "\n - ".join([f.__name__ for f in untested_functions])
-        err += f"\n\nThe following functions were not tested:\n{untested_str}"
-
-    if err:
+        err = f"The following functions claimed to be valid, were not:\n{failed_str}"
         raise AssertionError("\n\n" + err)
 
 
@@ -523,6 +520,56 @@ class TestTake:
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
         assert s1.names == (join_dim_names(BATCH, "F", LENGTH),)
+
+
+class TestIndexSelect:
+    def test_index_select_batch(self, stream_tensor_bfl_fixture):
+        """Index select on the batch dim keeping only some examples but all other elements."""
+        assert_stream_tensor_and_meta_correct(
+            stream_tensor_bfl_fixture,
+            torch.index_select,
+            dim=0,
+            index=torch.tensor([0, 2]),
+            ids=["first", "last"],
+            sos=torch.tensor([True, False]),
+            eos=torch.tensor([False, True]),
+            lengths=torch.tensor([3, 2]),
+            names=stream_tensor_bfl_fixture.names,
+        )
+
+    def test_index_select_feature(self, stream_tensor_bfl_fixture, stream_meta_kwargs_fixture):
+        """Index select on the feature dim keeping only some features but all other elements."""
+        stream_meta_kwargs_fixture["names"] = (BATCH, "F", LENGTH)
+        assert_stream_tensor_and_meta_correct(
+            stream_tensor_bfl_fixture,
+            torch.index_select,
+            dim=1,
+            index=torch.tensor([0]),
+            **stream_meta_kwargs_fixture,
+        )
+
+    def test_index_select_length(self, stream_tensor_bfl_fixture, stream_meta_kwargs_fixture):
+        """Index select on the length dim keeping only some lengths but all other elements."""
+        stream_meta_kwargs_fixture["lengths"] = torch.tensor([2, 2, 1])
+        stream_meta_kwargs_fixture["sos"] = torch.tensor([True, False, False])
+        stream_meta_kwargs_fixture["eos"] = torch.tensor([False, False, True])
+        stream_meta_kwargs_fixture["names"] = (BATCH, "F", LENGTH)
+        assert_stream_tensor_and_meta_correct(
+            stream_tensor_bfl_fixture,
+            torch.index_select,
+            dim=2,
+            index=torch.tensor([0, 2]),
+            **stream_meta_kwargs_fixture,
+        )
+
+        with pytest.raises(IndexError):
+            assert_stream_tensor_and_meta_correct(
+                stream_tensor_bfl_fixture,
+                torch.index_select,
+                dim=2,
+                index=torch.tensor([2, 0]),
+                **stream_meta_kwargs_fixture,
+            )
 
 
 class TestMaskedSelect:

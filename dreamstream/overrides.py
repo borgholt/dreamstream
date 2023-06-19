@@ -684,6 +684,21 @@ def select(input: StreamTensor, dim: int, index: Union[None, int, slice, Tensor,
     return input.__getitem__(getitem_index)
 
 
+@implements(torch.index_select)
+@implements(torch.Tensor.index_select)
+def index_select(input: StreamTensor, dim: int, index: Tensor, *, out: Optional[torch.Tensor] = None):
+    tensor, meta, names = input.decouple()
+    out = torch.index_select(tensor, dim, index, out=out)
+
+    if dim == names.index(BATCH):
+        meta = meta[index]
+    elif dim == names.index(LENGTH):
+        meta = meta[:, index]
+
+    out.rename_(*names)
+    return StreamTensor(out, meta)
+
+
 @implements(torch.masked_select)
 def masked_select(input: StreamTensor, mask: Tensor, *, out: Optional[torch.Tensor] = None):
     tensor, meta, names = input.decouple()
@@ -825,9 +840,9 @@ def unqsqueeze(input: StreamTensor, dim: int) -> StreamTensor:
 # X @implements(torch.narrow)
 
 # X @implements(torch.scatter)
-# @implements(torch.diagonal_scatter)
-# @implements(torch.select_scatter)
-# @implements(torch.slice_scatter)
+# X @implements(torch.diagonal_scatter)
+# X @implements(torch.select_scatter)
+# X @implements(torch.slice_scatter)
 
 # X @implements(torch.scatter_add)
 # X @implements(torch.scatter_add_)
@@ -837,7 +852,7 @@ def unqsqueeze(input: StreamTensor, dim: int) -> StreamTensor:
 # X @implements(torch.select)  # Equivalent to slicing with torch.Tensor.__getitem__
 # X @implements(torch.select_copy)
 
-# @implements(torch.index_select)
+# X @implements(torch.index_select)
 # X @implements(torch.masked_select)
 # X @implements(torch.take)
 # X @implements(torch.take_along_dim)
@@ -877,5 +892,5 @@ def unqsqueeze(input: StreamTensor, dim: int) -> StreamTensor:
 # @implements(torch.unique)
 
 # moving dimensions
-# @implements(torch.transpose)
-# @implements(torch.permute)
+# X @implements(torch.transpose)
+# X @implements(torch.permute)
