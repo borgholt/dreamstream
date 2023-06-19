@@ -77,6 +77,7 @@ def test_function_coverage():
 
 
 ## Indexing
+    
 
 def test_feature_indexing_integer(stream_tensor_3d):
     """Indexing with an integer on the feature dim should remove the feature dim but not change the meta."""
@@ -87,6 +88,7 @@ def test_feature_indexing_integer(stream_tensor_3d):
     assert torch.equal(s5.meta.sos, torch.tensor([True, False, False]))
     assert torch.equal(s5.meta.eos, torch.tensor([False, False, True]))
     assert torch.equal(s5.meta.lengths, torch.tensor([3, 3, 2]))
+    assert torch.allclose(s5.tensor(), stream_tensor_3d.tensor()[:, 0, :])
     assert s5.names == (BATCH, LENGTH)
 
 

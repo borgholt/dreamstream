@@ -9,7 +9,11 @@ from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.patches.general import online, offline
 from dreamstream.nn.utils import pad_stream_tensor
 
-#TODO: Add support for subsampling convolutions (i.e., stride > kernel_width).
+# TODO: #1 Add support for subsampling convolutions (i.e., stride > kernel_width).
+# TODO: #2 Generalize to N-D convolutions, where the length dimension can be any dimension.
+# TODO: Add support for transposed convolutions.
+
+
 
 def conv_1d_pre_hook(self, inputs):
     
@@ -32,7 +36,7 @@ def conv_1d_pre_hook(self, inputs):
         if (buffer_lengths == ref_length).all():
             buffer_data = torch.stack(buffer_data) 
             input = torch.cat([buffer_data, input], dim=-1)
-        
+            
         # If not, split batch into individual inputs and concatenate separately first.
         else:
             # TODO: This needs to be tested.
@@ -46,11 +50,12 @@ def conv_1d_pre_hook(self, inputs):
 def conv_1d_post_hook(self, inputs, outputs):
     
     if self.streaming:
-        outputs, buffer = outputs
-        self.stream_buffer.update(buffer)
+        outputs = outputs
+        self.stream_buffer.update(outputs.meta._temp_buffer)
+        outputs.meta._temp_buffer = None
         
         # TODO: Simplify this.
-        if outputs.meta.any_end:
+        if outputs.meta.any_ending:
             for _id, eos in zip(outputs.meta.ids, outputs.meta.eos):
                 if eos and _id in self.stream_buffer:
                     del self.stream_buffer[_id]

@@ -7,9 +7,8 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from dreamstream.tensor import StreamTensor, StreamMetadata, as_stream_tensor
-from dreamstream.func_coverage import OVERRIDDEN_FUNCTIONS
+from dreamstream.func_coverage import CUSTOMIZED_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
-
 
 # Wrap whatever functools.update_wrapper usually wraps, except __doc__
 WRAPPER_ASSIGNMENTS = tuple(set(functools.WRAPPER_ASSIGNMENTS) - {"__doc__"})
@@ -39,11 +38,10 @@ def implements(torch_function):
     def decorator(func):
         functools.update_wrapper(func, torch_function, assigned=WRAPPER_ASSIGNMENTS)
         func.__doc__ = augment_documentation(func.__doc__, torch_function.__doc__)
-        OVERRIDDEN_FUNCTIONS[torch_function] = func
+        CUSTOMIZED_FUNCTIONS[torch_function] = func
         return func
 
     return decorator
-
 
 @implements(torch.cat)
 def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
@@ -176,16 +174,35 @@ def chunk(tensor: StreamTensor, chunks: int, dim=0):
 def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: float = None):
     meta = input.meta
     names = input.names
-    input = input.named_tensor().rename(None)
+
     # TODO: Adapt meta
-    output = torch.nn.functional.pad(input, pad, mode=mode, value=value)
+    output = torch.nn.functional.pad(input.tensor(), pad, mode=mode, value=value)
+    
     output = output.rename(*names)
     return StreamTensor(output, meta)
 
+@implements(torch.quantize_per_tensor)
+def quantize_per_tensor(input: Tuple[StreamTensor], scale: float, zero_point: int, dtype: torch.dtype):
+    input = input.tensor() if isinstance(input, StreamTensor) else tuple([t.tensor() for t in input]) 
+    return torch.quantize_per_tensor(input, scale, zero_point, dtype)
 
+@implements(torch.quantize_per_tensor_dynamic)
+def quantize_per_tensor_dynamic(input: Tuple[StreamTensor], dtype: torch.dtype, reduce_range: bool):
+    input = input.tensor() if isinstance(input, StreamTensor) else tuple([t.tensor() for t in input]) 
+    return torch.quantize_per_tensor_dynamic(input, dtype, reduce_range)
 
-def _compute_conv_output_lengths(input_lengths: Tensor, kernel_width: int, stride: int):
-    return 
+@implements(torch.fake_quantize_per_tensor_affine)
+def fake_quantize_per_tensor_affine(input: StreamTensor, scale: float, zero_point: int, quant_min: int, quant_max: int):
+    return torch.fake_quantize_per_tensor_affine(input.tensor(), scale, zero_point, quant_min, quant_max)
+
+@implements(torch.frexp)
+@implements(torch.Tensor.frexp)
+def frexp(input: StreamTensor):
+    tensor, meta, names = input.decouple()
+    out = torch.frexp(input.tensor())
+    mantissa = StreamTensor(out.mantissa.rename(*names), meta=meta)
+    exponent = StreamTensor(out.exponent.rename(*names), meta=meta)
+    return torch.return_types.frexp((mantissa, exponent))
 
 
 @implements(torch.conv1d)
@@ -235,13 +252,14 @@ def conv1d(input: StreamTensor, weight: Tensor, bias: Optional[Tensor] = None, s
         for i, (start, end, _id, eos) in enumerate(zip(next_start, meta.lengths, meta.ids, meta.eos)):
             if not eos:
                 buffer[_id] = input[i, ..., start:end]
+    meta._temp_buffer = buffer
     
     # Convolve input and revert to StreamTensor.
     output = torch.conv1d(input, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
     output.rename_(*names)
     meta.lengths = output_lengths
     #TODO: Consider whether to zero out the padding.
-    return StreamTensor(output, meta), buffer
+    return StreamTensor(output, meta)
 
 
 def is_multidimensional_indexing(indices: Union[None, int, slice, List[Any], Tuple[Any, ...]]):

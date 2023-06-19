@@ -147,6 +147,7 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
       - operations that reduce the batch dimension (e.g. `torch.sum`): Reduce also the attributes along the batch dim. This happens in losses.
       - operations that create new dimensions: Adjust `batch_dim` and `stream_dim` accordlingly. This could happen anywhere.
   - Seperate arguments to forward method: We can change all patched forward methods to take additional arguments, but, by default they won't be given (and we have no control).
+- Support loading/saving of named tensors by custom `__reduce__` or `__reduce_ex__`.
 
 ## Can we use DreamStream for training?
 
