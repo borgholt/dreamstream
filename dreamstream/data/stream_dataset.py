@@ -24,7 +24,7 @@ LOGGER = logging.getLogger(__file__)
 
 
 # TODO (JDH): Add boolean flag to switch between starting a new call as soon as the previous one ends, or waiting for
-# all calls of the previous batch to end before starting new calls.
+# all calls of the previous batch to end before starting new calls. Current behavior is the former.
 
 
 def partition_by_sum(

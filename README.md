@@ -147,6 +147,14 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
       - operations that reduce the batch dimension (e.g. `torch.sum`): Reduce also the attributes along the batch dim. This happens in losses.
       - operations that create new dimensions: Adjust `batch_dim` and `stream_dim` accordlingly. This could happen anywhere.
   - Seperate arguments to forward method: We can change all patched forward methods to take additional arguments, but, by default they won't be given (and we have no control).
+- How do we deal with operations that are invalid on one or more StreamTensors?
+  - Examples:
+    - Adding two StreamTensors with different `ids`.
+    - Combining batch or length dimensions with one or more other dimensions into a single dimension using e.g. `torch.reshape`, `torch.flatten` or masked indexing.
+  - Options:
+    - Fail outright.
+    - Fallback to a regular `torch.Tensor`.
+    - Fallback to a different tensor subclass that is identical in behaviour to `torch.Tensor` but carries the frozen `StreamMetadata` along.
 
 ## Can we use DreamStream for training?
 
