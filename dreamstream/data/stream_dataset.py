@@ -1,3 +1,4 @@
+import collections
 import itertools
 import logging
 import math
@@ -5,6 +6,7 @@ import pathlib
 import time
 
 from typing import Dict, List, Callable, Optional, Generator, Tuple, Union
+import rich
 from tqdm import tqdm
 
 import random
@@ -16,17 +18,14 @@ import torchaudio
 
 from torch.utils.data import IterableDataset, DataLoader
 
-from dreamstream.data.data_objects import AudioSample
-from dreamstream.tensor import StreamTensor, stream_tensor
+from dreamstream.data.data_objects import StreamSample
+from dreamstream.tensor import StreamTensor, as_stream_tensor, stream_metadata
 
 
 LOGGER = logging.getLogger(__file__)
 
 
-# TODO (JDH): Add boolean flag to switch between starting a new call as soon as the previous one ends, or waiting for
-# all calls of the previous batch to end before starting new calls. Current behavior is the former.
-
-
+# TODO (JDH): Might be worthwile implementing this with numpy and compiling with numba.
 def partition_by_sum(
     values: List[float], num_partitions: int, shuffle: bool = False, sort: bool = True
 ) -> Tuple[List[List[float]], List[List[int]]]:
@@ -83,14 +82,43 @@ def concatenate_ragged(
     return batch
 
 
-class AudioStreamDataset(IterableDataset):
+class StreamDataset(IterableDataset):
+    """Interface for datasets that can be used with the `MultiStreamDataLoader`."""
+
+    def collate(self, batch: List[StreamSample]) -> StreamTensor:
+        """An optional method used to collate a list of AudioSamples into a StreamTensor.
+
+        NOTE: If a Callable is passed as the `custom_collate` argument to the `MultiStreamDataLoader`, this method
+        does not need to be implemented.
+
+        NOTE: If this method is not implemented, and `custom_collate` is not passed to the `MultiStreamDataLoader`,
+        the default collate function will be used.
+        """
+
+    def split(self, num_streams: int, shuffle: bool = False) -> List["StreamDataset"]:
+        """An optional method used to split the dataset into `num_streams` datasets.
+
+        NOTE: If a list of datasets is already available, this can be passed to the `MultiStreamDataLoader` instead and
+        this method does not need to be implemented.
+
+        Args:
+            num_streams (int): The number of datasets to split into.
+            shuffle (bool, optional): If True, shuffle the dataset before splitting. Defaults to False.
+
+        Returns:
+            List[StreamDataset]: A list of `num_streams` datasets.
+        """
+        raise NotImplementedError
+
+
+class AudioStreamDataset(StreamDataset):
     def __init__(
         self,
         file_list: List[str],
         chunk_seconds: float = 1.0,
         names: List[str] = None,
         transform: Callable = None,
-        file_metadata: Dict[str, torchaudio.backend.common.AudioMetaData] = None,  # TODO (JDH): Maybe delete
+        file_metadata: Dict[str, torchaudio.backend.common.AudioMetaData] = None,
         batch_size: Optional[int] = 1,
         shuffle: Optional[bool] = False,
         drop_last: Optional[bool] = False,
@@ -106,7 +134,7 @@ class AudioStreamDataset(IterableDataset):
         These attributes/behaviors are useful when serving the dataset using a `MultiStreamDataLoader` but can be
         ignored if the dataset is used standalone.
 
-        Files are read only once before chunking and iteration.
+        Each files is read only once per iteration.
 
         Args:
             file_list (List[str]]): A list of audio file paths.
@@ -146,8 +174,8 @@ class AudioStreamDataset(IterableDataset):
 
     @staticmethod
     def force_is_last_on_last_batch(
-        stream: Generator[List[AudioSample], None, None]
-    ) -> Generator[List[AudioSample], None, None]:
+        stream: Generator[List[StreamSample], None, None]
+    ) -> Generator[List[StreamSample], None, None]:
         # yield all but last batch
         to_yield = next(stream)
         for value in stream:
@@ -160,9 +188,9 @@ class AudioStreamDataset(IterableDataset):
 
         yield to_yield
 
-    def process_data(self, file: str) -> Generator[AudioSample, None, None]:
+    def process_data(self, file: str) -> Generator[StreamSample, None, None]:
         # TODO (JDH): For vseq, we can generalize this to support several modalities with Loader classes by adding
-        #             a Chunker class per modality that splits a loaded file into chunks.
+        #   a Chunker class per modality that splits a loaded file into chunks.
         # Load file
         file_metadata = self.file_metadata[file]
         audio, sample_rate = torchaudio.load(file)  # (C, L)
@@ -178,7 +206,7 @@ class AudioStreamDataset(IterableDataset):
         audio_chunks = [audio[..., i : i + chunk_size] for i in range(0, audio.shape[-1], chunk_size)]
 
         for i, audio_chunk in enumerate(audio_chunks):
-            audio_sample = AudioSample(
+            audio_sample = StreamSample(
                 data=audio,
                 sos=(i == 0),
                 eos=(i == len(audio_chunks) - 1),
@@ -191,10 +219,11 @@ class AudioStreamDataset(IterableDataset):
             )
             yield audio_sample
 
-    def get_stream(self, file_list: List[str]) -> Generator[AudioSample, None, None]:
+    def get_stream(self, file_list: List[str]) -> Generator[StreamSample, None, None]:
+        """Create a stream of data from a number of files by processing each file with `self.process_data`."""
         return itertools.chain.from_iterable(map(self.process_data, file_list))
 
-    def get_streams(self) -> Generator[List[AudioSample], None, None]:
+    def get_streams(self) -> Generator[List[StreamSample], None, None]:
         """Create a stream of data from the dataset.
 
         The stream is a generator that yields batches of data. Each batch is a list of `batch_size` elements, and each
@@ -208,8 +237,10 @@ class AudioStreamDataset(IterableDataset):
             file_list = random.sample(self.file_list, len(self.file_list))
         else:
             file_list = self.file_list
+        # import IPython
+        # IPython.embed(using=False, header="Is `batch_size` used correctly? Seems doubled. Maybe it should also be an argument `num_streams`?")
 
-        # partition file list into batch_size file lists
+        # partition file list into batch_size file lists (from start plus offset to end in steps of batch_size)
         data_streams = [self.get_stream(file_list[i :: self.batch_size]) for i in range(self.batch_size)]
         if self.drop_last:
             data_stream = zip(*data_streams)
@@ -220,11 +251,11 @@ class AudioStreamDataset(IterableDataset):
 
         return data_stream
 
-    def __iter__(self) -> Generator[List[AudioSample], None, None]:
+    def __iter__(self) -> Generator[List[StreamSample], None, None]:
         return self.get_streams()
 
     @staticmethod
-    def custom_collate(batch: List[AudioSample]) -> StreamTensor:
+    def custom_collate(batch: List[StreamSample]) -> StreamTensor:
         """Collate a batch of AudioSample instances into a StreamTensor which is a torch.Tensor wth a StreamMetadata."""
         # sort by length
         batch = sorted(batch, key=lambda x: x.length, reverse=True)
@@ -236,13 +267,15 @@ class AudioStreamDataset(IterableDataset):
         # data = data.rename(BATCH, LENGTH)
 
         # collate batch metadata
-        lengths = torch.tensor([sample.length for sample in batch])
+        ids = [sample.id for sample in batch]
         sos = torch.tensor([sample.sos for sample in batch])
         eos = torch.tensor([sample.eos for sample in batch])
-        ids = [sample.id for sample in batch]
+        lengths = torch.tensor([sample.length for sample in batch])
+        chunk_indices = torch.tensor([sample.chunk_index for sample in batch])
 
         # create stream tensor and its meta
-        batch = stream_tensor(data, ids, sos, eos, lengths)
+        meta = stream_metadata(ids, sos, eos, lengths, chunk_indices)
+        batch = as_stream_tensor(data, meta)
         return batch
 
     def split(self, max_workers: int, batch_size: int, shuffle: bool, drop_last: bool):
@@ -283,6 +316,55 @@ class AudioStreamDataset(IterableDataset):
         return datasets
 
 
+# TODO (JDH): This currently works but the buffer grows to quickly.
+def make_streams_synchronous(
+    stream: Generator[List[StreamSample], None, None]
+) -> Generator[List[StreamSample], None, None]:
+    """
+    Raises:
+        StopIteration: When the stream is exhausted.
+    """
+    stream = iter(stream)
+    batch = next(stream)
+    yield batch
+
+    batch_size = len(batch)
+    active_ids = [sample.id for sample in batch]
+    buffers = collections.defaultdict(collections.deque)
+    buffers.update({sample.id: collections.deque([sample]) for sample in next(stream)})  # del?
+
+    is_stream_empty = False
+    while True:
+        # Make sure the active files are buffered until their end.
+        while not is_stream_empty and sum(1 for k in active_ids if buffers[k] and buffers[k][-1].eos) < batch_size:
+            try:
+                for sample in next(stream):
+                    buffers[sample.id].append(sample)
+                # print(sum(len(deque) for deque in buffers.values()))
+            except StopIteration:
+                is_stream_empty = True
+
+        # Create batch and yield if not empty.
+        batch = [buffers[id].popleft() for id in active_ids if buffers[id]]
+        if batch:
+            yield batch
+        else:
+            # If batch was empty, there are no active ids in the buffer and all files have ended.
+            # Try to get new ids from the buffer.
+            active_ids = [k for k in buffers if buffers[k] and buffers[k][0].sos][:batch_size]
+
+            if is_stream_empty and not active_ids:
+                return None
+
+            # Remove empty buffers.
+            filtered_buffers = {id: deque for id, deque in buffers.items() if deque}
+            buffers.clear()
+            buffers.update(filtered_buffers)
+
+
+# TODO (JDH): Dedicated collate process with output queue. Uses same prefetch factor and similar worker loop as PyTorch dataloader. Maybe it use/is a dataloader that wraps the list of other dataloaders in an iterable dataset? Would be easier.
+
+
 class MultiStreamDataLoader:
     def __init__(
         self,
@@ -290,6 +372,7 @@ class MultiStreamDataLoader:
         batch_size: int = 1,
         shuffle: bool = False,
         num_workers: int = 0,
+        non_overlapping_batches: bool = False,
         collate_fn: Optional[Callable] = None,
         pin_memory: bool = False,
         drop_last: bool = False,
@@ -308,26 +391,36 @@ class MultiStreamDataLoader:
 
         Args:
             dataset (Union[IterableDataset, List[IterableDataset]]): A single or a list of IterableDataset instances.
+            batch_size (int): The batch size.
             num_workers (int, optional): When a single dataset is given, it is split into `num_workers` subsets and
                 each to be processed in parallel by a single worker. When a list of datasets is given, `num_workers`
                 has no effect. Defaults to 0.
+            non_overlapping_batches (bool, optional): If True, the batches are non-overlapping. In this case, new files
+                are started only once every file in the batch has ended. If False, a new file is started as soon as a
+                file in the previous batch ended. Defaults to False.
             drop_last (bool, optional): Drop the last batch(es) if smaller than `batch_size`. Defaults to False.
             collate_fn (Callable, optional): A function that takes a list of batch parts and collates them into a
                 batch. Defaults to None.
         """
-
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.num_workers = num_workers
+        self.non_overlapping_batches = non_overlapping_batches
         self.drop_last = drop_last
         self.worker_init_fn = worker_init_fn
+
+        if bool(drop_last) == bool(non_overlapping_batches):
+            raise ValueError("Only one of `drop_last` and `non_overlapping_batches` can be True.")
 
         if isinstance(dataset, list):
             self.num_workers = len(dataset)
 
         if collate_fn is None:
-            collate_fn = torch.utils.data._utils.collate.default_collate
+            if hasattr(dataset, "collate_fn"):
+                collate_fn = dataset.collate_fn
+            else:
+                collate_fn = torch.utils.data._utils.collate.default_collate
 
         self.collate_fn = collate_fn
 
@@ -364,25 +457,31 @@ class MultiStreamDataLoader:
             datasets = self.dataset
 
         # TODO (JDH): Pass `collate_fn` to the DataLoaders to collate each worker's partial batch before returning it
-        #             to the main process to be collated into a full batch. Is this faster than collating all in the
-        #             main process?
+        #   to the main process to be collated into a full batch. Is this faster than collating all in the main process?
         stream_loaders = [
             DataLoader(dataset, **self.dataloader_kwargs, worker_init_fn=self._get_worker_init_fn(i))
             for i, dataset in enumerate(datasets)
-        ]
+        ]  # List[DataLoader] == List[Generator[List[StreamSample]]]
 
         if self.drop_last:
-            # zip only batch parts where all streams have data.
+            # Zip only batch parts where all streams have data.
+            # List[Generator[List[StreamSample]]] -> Generator[List[List[StreamSample]]]]
             stream_loaders = zip(*stream_loaders)
         else:
-            # zip all batch parts and filter out None values (which are returned when a stream has run out of data).
-            stream_loaders = itertools.zip_longest(*stream_loaders)
+            # Zip all batch parts and filter out None values which are returned when a stream has run out of data.
+            # List[Generator[List[StreamSample]]] -> Generator[List[List[StreamSample]]]]
+            stream_loaders = itertools.zip_longest(*stream_loaders, fillvalue=None)
             stream_loaders = (filter(lambda x: x is not None, batch_parts) for batch_parts in stream_loaders)
 
-        # flatten batches from Generator[List[List[AudioSample]]] to Generator[List[AudioSample]].
+        # Flatten batches from loaders and datasets to single generator i.e. from Generator[List[List[StreamSample]]] to
+        # Generator[List[StreamSample]].
         stream_loader = (list(itertools.chain.from_iterable(batch_parts)) for batch_parts in stream_loaders)
 
-        # collate batches
+        # Wait for all files being streamed to finish before starting the next set of files.
+        if self.non_overlapping_batches:
+            stream_loader = make_streams_synchronous(stream_loader)
+
+        # Collate batches
         stream_loader = (self.collate_fn(batch) for batch in stream_loader)
         return stream_loader
 
@@ -402,9 +501,10 @@ if __name__ == "__main__":
     loader = MultiStreamDataLoader(
         datasets,
         batch_size=8,
-        num_workers=2,
-        shuffle=True,
-        drop_last=True,
+        num_workers=0,
+        shuffle=False,
+        drop_last=False,
+        non_overlapping_batches=True,
         collate_fn=AudioStreamDataset.custom_collate,
     )
 
@@ -417,11 +517,11 @@ if __name__ == "__main__":
             batches.append(batch)
 
             files_seen.update(batch.meta.ids)
-            sample_ids = [f"{batch.meta.ids[i]} {batch.meta.chunk_index[i]:2d}" for i in range(len(batch.meta.ids))]
+            sample_ids = [f"{batch.meta.ids[i]} {batch.meta.chunk_indices[i]:2d}" for i in range(len(batch.meta.ids))]
             samples_seen.extend(sample_ids)
 
             filenames = [id.split("/")[-1].split(".")[0] for id in batch.meta.ids]
-            chunk_idx = [chunk_index for chunk_index in batch.meta.chunk_index]
+            chunk_idx = [chunk_indices for chunk_indices in batch.meta.chunk_indices]
             sos = [int(sos) for sos in batch.meta.sos]
             eos = [int(eos) for eos in batch.meta.eos]
 
