@@ -5,7 +5,6 @@ from typing import Any, Optional, List, Tuple, Union
 from pathlib import PosixPath
 
 import torch
-import torchaudio
 
 from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.utils.flags import BATCH, LENGTH
