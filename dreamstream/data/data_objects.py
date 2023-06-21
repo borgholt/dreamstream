@@ -1,6 +1,8 @@
 import uuid
 import dataclasses
-from typing import Any, Optional, List, Tuple
+
+from typing import Any, Optional, List, Tuple, Union
+from pathlib import PosixPath
 
 import torch
 import torchaudio
@@ -20,7 +22,7 @@ class StreamSample:
     chunk_index: Optional[int] = dataclasses.field(default=None, repr=True)
     num_chunks: Optional[int] = dataclasses.field(default=None, repr=True)
     id: Optional[str] = dataclasses.field(default_factory=lambda: uuid.uuid4().hex)
-    file: Optional[str] = dataclasses.field(default=None, repr=True)
+    file: Optional[Union[str, PosixPath]] = dataclasses.field(default=None, repr=True)
     file_metadata: Optional[Any] = dataclasses.field(default=None, repr=True)
 
 
