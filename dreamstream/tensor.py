@@ -692,6 +692,16 @@ class StreamTensor(torch.Tensor):
         """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
         super().__init__()
         self.meta = meta
+        if names is not None:
+            self.rename_(*names)
+
+    def __getstate__(self) -> Tuple[torch.Tensor, StreamMetadata, List[str]]:
+        """Return the state of the StreamTensor object."""
+        return self.decouple()
+
+    def __setstate__(self, state: Tuple[torch.Tensor, StreamMetadata, List[str]]):
+        """Set the state of the StreamTensor object."""
+        self.__init__(*state)
 
     @classmethod
     def __torch_function__(cls, func: Callable, types: List[torch.Tensor], args=(), kwargs=None):
@@ -816,7 +826,11 @@ class StreamTensor(torch.Tensor):
 
 
 def as_stream_tensor(
-    data, meta: StreamMetadata, names: Tuple[Union[None, int]] = None, dtype: torch.dtype = None, device: torch.device = None
+    data,
+    meta: StreamMetadata,
+    names: Tuple[Union[None, int]] = None,
+    dtype: torch.dtype = None,
+    device: torch.device = None,
 ) -> StreamTensor:
     """Convert a tensor to a StreamTensor. See also `torch.as_tensor`."""
     data = torch.as_tensor(data, dtype=dtype, device=device)
