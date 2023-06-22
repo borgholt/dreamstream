@@ -41,4 +41,3 @@ def sequence_mask(
 
     seq_mask = step_ids < seq_lens.unsqueeze(1)  # broadcast over batch, (N, T)
     return seq_mask.to(dtype)
-

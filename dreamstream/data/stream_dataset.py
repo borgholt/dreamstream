@@ -409,7 +409,7 @@ class MultiStreamDataLoader(IterableDataset):
                 given, `num_workers` has no effect. Defaults to 0.
             overlapping_batches (bool, optional): If True, each new batch will introduce new files to replace those that
                 ended in the previous batch, keeping the batch size constant (except for the last batch if
-                `drop_last=False`). If False, new files will only start once all files from the previous batch have 
+                `drop_last=False`). If False, new files will only start once all files from the previous batch have
                 ended. This is usually more memory and compute efficient for state management in models in online mode,
                 but also leads to more batches. Defaults to False.
             drop_last (bool, optional): Drop the last batch(es) if smaller than `batch_size`. Defaults to False.
@@ -465,7 +465,7 @@ class MultiStreamDataLoader(IterableDataset):
         return wrapped_worker_init_fn
 
     def get_stream_loaders(self) -> Generator[Any, None, None]:
-        # TODO (JDH): Wrap this method in a dedicated process to offload all data preparation from main process. 
+        # TODO (JDH): Wrap this method in a dedicated process to offload all data preparation from main process.
         # Currently this happens in the main proces and may take a bit of time, especially the collation.
 
         if isinstance(self.dataset, IterableDataset):
@@ -508,7 +508,6 @@ class MultiStreamDataLoader(IterableDataset):
     def __iter__(self) -> Generator[Any, None, None]:
         for batch in self.get_stream_loaders():
             yield batch
-
 
 
 class MultiStreamOneProcessDataLoader:

@@ -4,7 +4,7 @@ from dreamstream.patches.conv import patch_conv_1d
 from dreamstream.patches.modes import add_streaming_modes
 
 
-MODULE_TO_PATCH = {
+MODULE_PATCHERS = {
     nn.Conv1d: patch_conv_1d,
 }
 
@@ -17,14 +17,27 @@ def patch(module: nn.Module) -> nn.Module:
 
 def patch_module(module) -> None:
     """Patch a given module to support streaming mode."""
-    patch_method = MODULE_TO_PATCH.get(type(module), None)
+    patch_method = MODULE_PATCHERS.get(type(module), None)
     if patch_method is None:
         add_streaming_modes(module)
     else:
         patch_method(module)
 
     # Error checking for modules that do NOT have the correct behaviour yet.
-    if isinstance(module, (nn.Conv2d, nn.Conv3d, nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d, nn.LSTM, nn.GRU, nn.RNN, nn.MultiheadAttention)):
+    if isinstance(
+        module,
+        (
+            nn.Conv2d,
+            nn.Conv3d,
+            nn.ConvTranspose1d,
+            nn.ConvTranspose2d,
+            nn.ConvTranspose3d,
+            nn.LSTM,
+            nn.GRU,
+            nn.RNN,
+            nn.MultiheadAttention,
+        ),
+    ):
         raise NotImplementedError(f"Module {type(module)} is not supported yet.")
 
     return module
