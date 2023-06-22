@@ -9,6 +9,7 @@ OVERRIDDEN_FUNCTIONS = dict()
 # Functions that work for StreamTensors using the super().__torch_function__.
 VALID_FUNCTIONS = {
     torch.Tensor.__repr__,
+    torch.Tensor.__str__,
 }
 
 # Functions that must be wrapped to avoid returning a StreamTensor.

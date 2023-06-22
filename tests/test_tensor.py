@@ -141,6 +141,7 @@ def to_torch_tensor_recursive(x):
 
 TEST_INPUTS_VALID_FUNCTIONS = {
     torch.Tensor.__repr__: Inputs(stream_tensor_bfl()),
+    torch.Tensor.__str__: Inputs(stream_tensor_bfl()),
 }
 
 TEST_INPUTS_DECOUPLE_FUNCTIONS = {
@@ -194,7 +195,7 @@ TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.Tensor.select_scatter] = TEST_INPUTS_RECOUP
 TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.Tensor.slice_scatter] = TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.slice_scatter]
 
 
-TEST_SKIP_EQUALITY_CHECK = {torch.Tensor.__repr__}
+TEST_SKIP_EQUALITY_CHECK = {torch.Tensor.__repr__, torch.Tensor.__str__}
 
 
 def test_valid_coupled_recoupled_functions():

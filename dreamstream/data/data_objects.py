@@ -1,27 +1,28 @@
 import uuid
 import dataclasses
-from typing import Optional, List, Tuple
+
+from typing import Any, Optional, List, Tuple, Union
+from pathlib import PosixPath
 
 import torch
-import torchaudio
 
 from dreamstream.tensor import StreamTensor, StreamMetadata
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
 @dataclasses.dataclass()
-class AudioSample:
+class StreamSample:
     """Data for a sample of audio from a single audio file."""
 
-    data: torch.Tensor
-    sos: bool
-    eos: bool
-    length: int
-    chunk_index: Optional[int] = None
-    num_chunks: Optional[int] = None
+    data: torch.Tensor = dataclasses.field(repr=False)
+    sos: bool = dataclasses.field(repr=True)
+    eos: bool = dataclasses.field(repr=True)
+    length: int = dataclasses.field(repr=True)
+    chunk_index: Optional[int] = dataclasses.field(default=None, repr=True)
+    num_chunks: Optional[int] = dataclasses.field(default=None, repr=True)
     id: Optional[str] = dataclasses.field(default_factory=lambda: uuid.uuid4().hex)
-    file: Optional[str] = None
-    file_metadata: Optional[torchaudio.backend.common.AudioMetaData] = None
+    file: Optional[Union[str, PosixPath]] = dataclasses.field(default=None, repr=True)
+    file_metadata: Optional[Any] = dataclasses.field(default=None, repr=True)
 
 
 # class ChunkedList(list):

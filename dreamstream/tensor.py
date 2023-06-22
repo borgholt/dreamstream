@@ -69,6 +69,7 @@ class StreamMetadata:
         "_sos",
         "_eos",
         "_lengths",
+        "_chunk_indices",
         "_min_length",
         "_max_length",
         "_lengths_updated",
@@ -87,6 +88,7 @@ class StreamMetadata:
         sos: Union[bool, List[bool], torch.BoolTensor],
         eos: Union[bool, List[bool], torch.BoolTensor],
         lengths: Union[int, List[int], torch.IntTensor],
+        chunk_indices: Optional[Union[int, List[int], torch.IntTensor]] = None,
     ):
         # TODO: Make initialization lazy such that it only happens when the StreamMetadata is actually used.
         if isinstance(ids, str):
@@ -115,6 +117,7 @@ class StreamMetadata:
         self._sos = sos
         self._eos = eos
         self._lengths = lengths
+        self._chunk_indices = chunk_indices
 
         self._min_length = None
         self._max_length = None
@@ -156,6 +159,14 @@ class StreamMetadata:
     def lengths(self, lengths: torch.IntTensor):
         self._lengths = lengths
         self._lengths_updated = True
+
+    @property
+    def chunk_indices(self) -> Optional[torch.IntTensor]:
+        return self._chunk_indices
+
+    @chunk_indices.setter
+    def chunk_indices(self, chunk_indices: Optional[torch.IntTensor]):
+        self._chunk_indices = chunk_indices
 
     @property
     def min_length(self):
@@ -647,6 +658,7 @@ def stream_metadata(
     sos: Union[bool, List[bool], torch.BoolTensor],
     eos: Union[bool, List[bool], torch.BoolTensor],
     lengths: Union[int, List[int], torch.IntTensor],
+    chunk_indices: Optional[Union[int, List[int], torch.IntTensor]] = None,
 ) -> StreamMetadata:
     """Create a StreamMetadata object from the given arguments.
 
@@ -655,7 +667,7 @@ def stream_metadata(
         sos (bool): Whether the input tensors are the first in a batch.
         eos (bool): Whether the input tensors are the last in a batch.
         lengths (Union[int, List[int]]): The lengths of the input tensors.
-        chunk_index (int): The index of the chunk in the batch.
+        chunk_indices (int): The index of the chunk in the batch.
         num_chunks (Optional[int], optional): The number of chunks in the batch. Defaults to None.
 
     Returns:
@@ -666,6 +678,7 @@ def stream_metadata(
         sos=sos,
         eos=eos,
         lengths=lengths,
+        chunk_indices=chunk_indices,
     )
 
 
@@ -679,6 +692,16 @@ class StreamTensor(torch.Tensor):
         """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
         super().__init__()
         self.meta = meta
+        if names is not None:
+            self.rename_(*names)
+
+    def __getstate__(self) -> Tuple[torch.Tensor, StreamMetadata, List[str]]:
+        """Return the state of the StreamTensor object."""
+        return self.decouple()
+
+    def __setstate__(self, state: Tuple[torch.Tensor, StreamMetadata, List[str]]):
+        """Set the state of the StreamTensor object."""
+        self.__init__(*state)
 
     @classmethod
     def __torch_function__(cls, func: Callable, types: List[torch.Tensor], args=(), kwargs=None):
@@ -803,11 +826,16 @@ class StreamTensor(torch.Tensor):
 
 
 def as_stream_tensor(
-    data, meta: StreamMetadata, names: Tuple[Union[None, int]], dtype: torch.dtype = None, device: torch.device = None
+    data,
+    meta: StreamMetadata,
+    names: Tuple[Union[None, int]] = None,
+    dtype: torch.dtype = None,
+    device: torch.device = None,
 ) -> StreamTensor:
     """Convert a tensor to a StreamTensor. See also `torch.as_tensor`."""
     data = torch.as_tensor(data, dtype=dtype, device=device)
-    data = data.refine_names(*names)  # Make the tensor named if it isn't already.
+    if names:
+        data = data.refine_names(*names)  # Make the tensor named if it isn't already.
     return StreamTensor(data=data, meta=meta)
 
 
