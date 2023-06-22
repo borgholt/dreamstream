@@ -43,24 +43,23 @@ def conv_1d_pre_hook(self, inputs):
 
 
 def conv_1d_post_hook(self, inputs, outputs):
-    if self.streaming:
-        outputs = outputs
-        self.stream_buffer.update(outputs.meta._temp_buffer)
-        outputs.meta._temp_buffer = None
+    if not self.streaming:
+        return outputs
 
-        # TODO (LB): Simplify this.
-        if outputs.meta.any_ending:
-            for _id, eos in zip(outputs.meta.ids, outputs.meta.eos):
-                if eos and _id in self.stream_buffer:
-                    del self.stream_buffer[_id]
+    self.stream_buffer.update(outputs.meta._temp_buffer)
+    outputs.meta._temp_buffer = None
 
-    return outputs
+    # TODO (LB): Simplify this.
+    if outputs.meta.any_ending:
+        for _id, eos in zip(outputs.meta.ids, outputs.meta.eos):
+            if eos and _id in self.stream_buffer:
+                del self.stream_buffer[_id]
 
 
-def patch_conv_1d(module):
+def patch_conv_1d(module) -> torch.nn.Module:
     add_streaming_modes(module)
 
-    # Add stream_buffer dictionary.
+    # Add a dictionary for storing input buffers.
     module.stream_buffer = {}
 
     # Add module-specific attributes.
@@ -69,5 +68,4 @@ def patch_conv_1d(module):
     # Register pre_hook and post_hook.
     module.register_forward_pre_hook(conv_1d_pre_hook)
     module.register_forward_hook(conv_1d_post_hook)
-
     return module

@@ -153,7 +153,7 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
     - Combining batch or length dimensions with one or more other dimensions into a single dimension using e.g. `torch.reshape`, `torch.flatten` or masked indexing.
   - Options:
     - Fail outright.
-    - Fallback to a regular `torch.Tensor`.
+    - Fallback to a regular `torch.Tensor`. <-- Chose this one.
     - Fallback to a different tensor subclass that is identical in behaviour to `torch.Tensor` but carries the frozen `StreamMetadata` along.
 - Support loading/saving of named tensors by custom `__reduce__` or `__reduce_ex__`.
 

@@ -42,6 +42,7 @@ class StreamMetadata:
         "_lengths",
         "_chunk_indices",
         "_temp_buffer",
+        "_temp_names",
         "_min_length",
         "_max_length",
         "_lengths_updated",
@@ -92,6 +93,7 @@ class StreamMetadata:
         self._chunk_indices = chunk_indices
 
         self._temp_buffer = None
+        self._temp_names = None
 
         self._min_length = None
         self._max_length = None
@@ -237,7 +239,7 @@ class StreamMetadata:
         new_meta.__dict__.update(self.__dict__)
         return new_meta
 
-    def __deepcopy__(self, memo):
+    def __deepcopy__(self, memo=None):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
             ids=deepcopy(self.ids),
@@ -688,7 +690,6 @@ class StreamTensor(torch.Tensor):
         Raises:
             RuntimeError: If the intercepted function could not be handled safely.
         """
-
         if kwargs is None:
             kwargs = dict()
 

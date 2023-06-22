@@ -238,6 +238,7 @@ def conv1d(
             padding = 0
 
     # Create buffer.
+    # TODO (JDH): Default to storing the batched input buffer.
     output_lengths = ((meta.lengths - kernel_width) // stride[0] + 1).clip(min=0)
     next_start = output_lengths * stride[0]
     buffer = {}
@@ -919,3 +920,16 @@ def unqsqueeze(input: StreamTensor, dim: int) -> StreamTensor:
 # moving dimensions
 # X @implements(torch.transpose)
 # X @implements(torch.permute)
+
+
+
+# @implements(torch.Tensor.__getstate__)
+# def __getstate__(self):
+#     return self.metadata
+
+
+@implements(torch.Tensor.__reduce_ex__)
+def __reduce_ex__(self: StreamTensor, proto):
+    print("OHI!")
+    self.rename_(None)
+    return torch.Tensor.__reduce_ex__(self, proto)
