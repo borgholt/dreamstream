@@ -3,7 +3,7 @@ import types
 import torch
 
 from dreamstream.tensor import StreamTensor, StreamMetadata
-from dreamstream.patches.general import online, offline
+from dreamstream.patches.modes import add_streaming_modes, online, offline
 from dreamstream.nn.utils import pad_stream_tensor
 
 
@@ -38,7 +38,7 @@ def conv_1d_pre_hook(self, inputs):
             # If not, split batch into individual inputs and concatenate separately first.
             # TODO (LB): This needs to be tested.
             input = input.unpad_sequence()
-            input = [a if b is None else torch.cat([b, a], dim=-1) for a, b in zip(input, buffer_data)]
+            input = [x if b is None else torch.cat([b, x], dim=-1) for x, b in zip(input, buffer_data)]
             input = pad_stream_tensor(input).permute(1, 2, 0)
 
     return input
@@ -60,10 +60,7 @@ def conv_1d_post_hook(self, inputs, outputs):
 
 
 def patch_conv_1d(module):
-    # Add streaming mode.
-    module.online = types.MethodType(online, module)
-    module.offline = types.MethodType(offline, module)
-    module.streaming = False
+    add_streaming_modes(module)
 
     # Add stream_buffer dictionary.
     module.stream_buffer = {}

@@ -134,7 +134,7 @@ class TestAudioStreamDataset:
 
 class TestMultiStreamDataLoader:
     @pytest.mark.parametrize(
-        "shuffle, drop_last, non_overlapping_batches",
+        "shuffle, drop_last, overlapping_batches",
         [
             (False, False, False),
             (True, False, False),
@@ -146,7 +146,7 @@ class TestMultiStreamDataLoader:
             (True, True, True),
         ],
     )
-    def test_instantiate(self, test_source_df, shuffle, drop_last, non_overlapping_batches):
+    def test_instantiate(self, test_source_df, shuffle, drop_last, overlapping_batches):
         dataset = AudioStreamDataset(
             file_list=test_source_df.filename,
             file_lengths=test_source_df.length,
@@ -158,10 +158,10 @@ class TestMultiStreamDataLoader:
             "num_workers": 5,
             "shuffle": shuffle,
             "drop_last": drop_last,
-            "non_overlapping_batches": non_overlapping_batches,
+            "overlapping_batches": overlapping_batches,
         }
 
-        if drop_last and non_overlapping_batches:
+        if drop_last and not overlapping_batches:
             with pytest.raises(ValueError):
                 MultiStreamDataLoader(dataset, **kwargs)
             return None
@@ -171,9 +171,9 @@ class TestMultiStreamDataLoader:
         assert isinstance(iter(dataloader), Generator)
 
     @pytest.mark.parametrize(
-        "num_workers, shuffle, non_overlapping_batches", itertools.product(*[[0, 1, 5], [True, False], [True, False]])
+        "num_workers, shuffle, overlapping_batches", itertools.product(*[[0, 1, 5], [True, False], [True, False]])
     )
-    def test_iterate_drop_last0(self, test_source_df, num_workers, shuffle, non_overlapping_batches):
+    def test_iterate_drop_last0(self, test_source_df, num_workers, shuffle, overlapping_batches):
         dataset = AudioStreamDataset(
             file_list=test_source_df.filename,
             file_lengths=test_source_df.length,
@@ -185,7 +185,7 @@ class TestMultiStreamDataLoader:
             num_workers=num_workers,
             shuffle=shuffle,
             drop_last=False,
-            non_overlapping_batches=non_overlapping_batches,
+            overlapping_batches=overlapping_batches,
             collate_fn=dataset.custom_collate,
         )
 
@@ -205,7 +205,7 @@ class TestMultiStreamDataLoader:
             samples_seen.extend(sample_ids)
 
             sos = [int(sos) for sos in batch.meta.sos]
-            if non_overlapping_batches:
+            if not overlapping_batches:
                 assert all([sos[i] == sos[0] for i in range(len(sos))]), "All files must start simultaneously."
 
             # names = [id.split("/")[-1].split(".")[0] for id in batch.meta.ids]
@@ -234,7 +234,7 @@ class TestMultiStreamDataLoader:
             num_workers=0,
             shuffle=shuffle,
             drop_last=True,
-            non_overlapping_batches=False,
+            overlapping_batches=True,
             collate_fn=dataset.custom_collate,
         )
 

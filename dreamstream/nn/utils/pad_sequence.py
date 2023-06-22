@@ -36,7 +36,6 @@ def pad_chunks(
     tensor = tensor.rename(*names)
 
     meta = StreamMetadata(ids=ids, sos=sos, eos=eos, lengths=lengths)
-
     return StreamTensor(data=tensor, meta=meta)
 
 

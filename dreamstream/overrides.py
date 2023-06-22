@@ -4,6 +4,7 @@ from typing import Any, Callable, NamedTuple, Optional, List, Sequence, Tuple, U
 from torch.types import Number
 
 import numpy as np
+import rich
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -62,8 +63,8 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     is_batch_dim = [t.is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]  # TODO (JDH): Speed this up
     if any(is_batch_dim):
         require_all_stream_tensors(tensors, "Cannot concatenate StreamTensor and torch.Tensor along batch dimension.")
-        tensors = [t.named_tensor() for t in tensors]
-        tensor = torch.cat(tensors, dim=dim, out=out)
+        torch_tensors = [t.named_tensor() for t in tensors]
+        tensor = torch.cat(torch_tensors, dim=dim, out=out)
         meta = StreamMetadata.cat_batch([t.meta for t in tensors])  # TODO (JDH): Make this lazily evaluated.
         return StreamTensor(tensor, meta)
 
@@ -72,11 +73,11 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     if any(is_length_dim):
         for t in tensors[:-1]:
             if isinstance(t, StreamTensor) and t.meta.lengths.min() < t.max_length():
-                raise NotImplementedError("Only the last tensor can be padded when concatenating along length.")
-        tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
-        tensor = torch.cat(tensors, dim=dim, out=out)
+                raise NotImplementedError("Only the right-most input can be padded when concatenating along length.")
+        torch_tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
+        tensor = torch.cat(torch_tensors, dim=dim, out=out)
         meta = StreamMetadata.cat_length([t.meta for t in tensors if isinstance(t, StreamTensor)])
-        meta.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])
+        meta.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])  # Add torch.Tensors
         return StreamTensor(tensor, meta)
 
     # Concatenation along a dimension that is neither batch nor length.

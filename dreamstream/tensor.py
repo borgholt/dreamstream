@@ -1,5 +1,4 @@
 import itertools
-import warnings
 
 from copy import deepcopy
 from typing import Any, Callable, List, Optional, Tuple, Union, Mapping, Sequence
@@ -26,6 +25,7 @@ from dreamstream.utils.numba import (
     update_eos_from_slice,
     update_lengths_from_list_of_indices,
 )
+from dreamstream import warnings
 
 
 # TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when
@@ -41,6 +41,7 @@ class StreamMetadata:
         "_eos",
         "_lengths",
         "_chunk_indices",
+        "_temp_buffer",
         "_min_length",
         "_max_length",
         "_lengths_updated",
@@ -236,7 +237,7 @@ class StreamMetadata:
         new_meta.__dict__.update(self.__dict__)
         return new_meta
 
-    def __deepcopy__(self):
+    def __deepcopy__(self, memo):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
             ids=deepcopy(self.ids),
@@ -665,8 +666,6 @@ class StreamTensor(torch.Tensor):
         """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
         super().__init__()
         self.meta = meta
-        if names is not None:
-            self.rename_(*names)
 
     def __getstate__(self) -> Tuple[torch.Tensor, StreamMetadata, List[str]]:
         """Return the state of the StreamTensor object."""
@@ -711,13 +710,14 @@ class StreamTensor(torch.Tensor):
         # Unhandled functions are passed to the torch.Tensor.__torch_function__ method.
         if func not in DEFAULT_VALID_FUNCTIONS:
             warnings.warn(
-                f"Function {func.__name__} is not handled by StreamTensor.__torch_function__ and may not work as expected."
+                f"Function {func.__name__} is not handled by StreamTensor.__torch_function__ "
+                f"and may not work as expected."
             )
 
         return cls.default_valid(func, types, args, kwargs)
 
-    @staticmethod
-    def default_valid(func, types, args, kwargs):
+    @classmethod
+    def default_valid(cls, func, types, args, kwargs):
         out = super().__torch_function__(func, types, args, kwargs)
 
         metas = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]  # TODO (JDH): Make recursive
@@ -766,9 +766,6 @@ class StreamTensor(torch.Tensor):
     def T(self):
         return self.permute(*reversed(range(self.ndim)))
 
-    # def test(self):
-    #     return super().rename(None)
-
     def is_batch_dim(self, dim: int) -> bool:
         return self.names[dim] == BATCH
 
@@ -798,10 +795,8 @@ class StreamTensor(torch.Tensor):
             return None
         if len(self.meta) == 1 and self.meta.max_length > 0:
             return self
-        tensor, meta, names = self.decouple()
-        batch_dim = names.index(BATCH)
-        tensor = torch.index_select(tensor, batch_dim, meta.lengths.nonzero().squeeze())
-        return as_stream_tensor(data=tensor, meta=meta.drop_empty(), names=names)
+
+        return torch.index_select(self, self.batch_dim, self.meta.lengths.nonzero().squeeze())
 
     def named_tensor(self) -> torch.Tensor:
         """Return the underlying torch.Tensor with names."""
@@ -847,9 +842,14 @@ def stream_tensor(
     pin_memory: bool = False,
 ) -> StreamTensor:
     """Convert a tensor to a StreamTensor. See also `torch.tensor`."""
-    data = torch.tensor(
-        data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory
-    )
+    try:
+        data = torch.tensor(
+            data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory
+        )
+    except RuntimeError:
+        data = torch.tensor(data, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory)
+        data.rename_(*names)
+
     return StreamTensor(data=data, meta=meta)
 
 

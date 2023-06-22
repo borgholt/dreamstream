@@ -323,7 +323,7 @@ def continue_buffering(
     num_current_buffered = sum(1 for id in active_ids if id in buffers and buffers[id] and buffers[id][-1].eos)
     num_next_buffered = sum(1 for id in buffers.keys() if id not in active_ids and buffers[id] and buffers[id][-1].eos)
 
-    return num_next_buffered < (batch_size - num_current_buffered) or num_current_buffered < num_current_running
+    return num_current_buffered < num_current_running or num_next_buffered < (batch_size - num_current_running)
 
 
 def make_streams_synchronous(
@@ -382,12 +382,13 @@ class MultiStreamDataLoader(IterableDataset):
         batch_size: int = 1,
         shuffle: bool = False,
         num_workers: int = 0,
-        non_overlapping_batches: bool = False,
+        overlapping_batches: bool = False,
         collate_fn: Optional[Callable] = None,
         pin_memory: bool = False,
         drop_last: bool = False,
         timeout: float = 0,
         worker_init_fn: Optional[Callable] = None,
+        multiprocessing_context: Any | None = None,
         prefetch_factor: Optional[int] = None,
         persistent_workers: bool = False,
         pin_memory_device: Optional[torch.device] = "",
@@ -402,12 +403,15 @@ class MultiStreamDataLoader(IterableDataset):
         Args:
             dataset (Union[IterableDataset, List[IterableDataset]]): A single or a list of IterableDataset instances.
             batch_size (int): The batch size.
+            shuffle (bool): Whether to shuffle the dataset between epochs.
             num_workers (int, optional): When a single dataset is given, it is split into `num_workers` subsets and
-                each to be processed in parallel by a single worker. When a list of datasets is given, `num_workers`
-                has no effect. Defaults to 0.
-            non_overlapping_batches (bool, optional): If True, the batches are non-overlapping. In this case, new files
-                are started only once every file in the batch has ended. If False, a new file is started as soon as a
-                file in the previous batch ended. Defaults to False.
+                each to be processed in parallel by a DataLoader using a single worker. When a list of datasets is
+                given, `num_workers` has no effect. Defaults to 0.
+            overlapping_batches (bool, optional): If True, each new batch will introduce new files to replace those that
+                ended in the previous batch, keeping the batch size constant (except for the last batch if
+                `drop_last=False`). If False, new files will only start once all files from the previous batch have 
+                ended. This is usually more memory and compute efficient for state management in models in online mode,
+                but also leads to more batches. Defaults to False.
             drop_last (bool, optional): Drop the last batch(es) if smaller than `batch_size`. Defaults to False.
             collate_fn (Callable, optional): A function that takes a list of batch parts and collates them into a
                 batch. Defaults to None.
@@ -416,14 +420,17 @@ class MultiStreamDataLoader(IterableDataset):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.num_workers = num_workers
-        self.non_overlapping_batches = non_overlapping_batches
+        self.overlapping_batches = overlapping_batches
         self.drop_last = drop_last
         self.worker_init_fn = worker_init_fn
+        self.collate_fn = collate_fn
 
-        if drop_last and non_overlapping_batches:
-            raise ValueError("Only one of `drop_last` and `non_overlapping_batches` can be True.")
+        if drop_last and not overlapping_batches:
+            raise ValueError("`drop_last` can only be used when overlapping batches.")
 
         if isinstance(dataset, list):
+            if num_workers > 0:
+                raise ValueError("When a list of datasets is given, `num_workers` has no effect.")
             self.num_workers = len(dataset)
 
         if collate_fn is None:
@@ -432,13 +439,13 @@ class MultiStreamDataLoader(IterableDataset):
             else:
                 collate_fn = torch.utils.data._utils.collate.default_collate
 
-        self.collate_fn = collate_fn
-
         self.dataloader_kwargs = dict(
             batch_size=None,
+            collate_fn=None,
             num_workers=(0 if self.num_workers == 0 else 1),
             pin_memory=pin_memory,
             timeout=timeout,
+            multiprocessing_context=multiprocessing_context,
             prefetch_factor=(prefetch_factor if num_workers > 0 else None),
             persistent_workers=persistent_workers,
             pin_memory_device=pin_memory_device,
@@ -446,7 +453,7 @@ class MultiStreamDataLoader(IterableDataset):
 
     def _get_worker_init_fn(self, actual_worker_id: int):
         """Wrap worker_init_fn to change the input `worker_id` for each worker. This is necessary because we
-        use `num_workers` independent DataLoaders instead of one DataLoader with `num_workers` workers."""
+        use `num_workers` independent DataLoaders with one worker each instead of one with `num_workers` workers."""
         if self.worker_init_fn is None:
             return None
 
@@ -458,6 +465,9 @@ class MultiStreamDataLoader(IterableDataset):
         return wrapped_worker_init_fn
 
     def get_stream_loaders(self) -> Generator[Any, None, None]:
+        # TODO (JDH): Wrap this method in a dedicated process to offload all data preparation from main process. 
+        # Currently this happens in the main proces and may take a bit of time, especially the collation.
+
         if isinstance(self.dataset, IterableDataset):
             num_workers = max(1, self.num_workers)
             datasets = self.dataset.split(
@@ -488,7 +498,7 @@ class MultiStreamDataLoader(IterableDataset):
         stream_loader = (list(itertools.chain.from_iterable(batch_parts)) for batch_parts in stream_loaders)
 
         # Wait for all files being streamed to finish before starting the next set of files.
-        if self.non_overlapping_batches:
+        if not self.overlapping_batches:
             stream_loader = make_streams_synchronous(stream_loader)
 
         # Collate batches
@@ -500,9 +510,6 @@ class MultiStreamDataLoader(IterableDataset):
             yield batch
 
 
-# TODO (JDH): Wrap collation in a dedicated process to offload all data preparation from main process. Currently
-# collation happens in the main proces.
-
 
 class MultiStreamOneProcessDataLoader:
     def __init__(
@@ -511,7 +518,7 @@ class MultiStreamOneProcessDataLoader:
         batch_size: int = 1,
         shuffle: bool = False,
         num_workers: int = 0,
-        non_overlapping_batches: bool = False,
+        overlapping_batches: bool = False,
         collate_fn: Optional[Callable] = None,
         pin_memory: bool = False,
         drop_last: bool = False,
@@ -537,7 +544,7 @@ class MultiStreamOneProcessDataLoader:
             num_workers (int, optional): When a single dataset is given, it is split into `num_workers` subsets and
                 each to be processed in parallel by a single worker. When a list of datasets is given, `num_workers`
                 has no effect. Defaults to 0.
-            non_overlapping_batches (bool, optional): If True, the batches are non-overlapping. In this case, new files
+            overlapping_batches (bool, optional): If True, the batches are non-overlapping. In this case, new files
                 are started only once every file in the batch has ended. If False, a new file is started as soon as a
                 file in the previous batch ended. Defaults to False.
             drop_last (bool, optional): Drop the last batch(es) if smaller than `batch_size`. Defaults to False.
@@ -552,7 +559,7 @@ class MultiStreamOneProcessDataLoader:
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=0,
-            non_overlapping_batches=non_overlapping_batches,
+            overlapping_batches=overlapping_batches,
             collate_fn=collate_fn,
             pin_memory=pin_memory,
             drop_last=drop_last,
