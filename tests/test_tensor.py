@@ -251,11 +251,11 @@ def test_function_coverage():
     num_invalid = len(UNSUPPORTED_FUNCTIONS)
     num_total = num_overridden + num_valid + num_invalid
 
-    # fraction_working = (num_overridden + num_valid) / num_total
+    fraction_working = (num_overridden + num_valid) / num_total
 
     msg = "Total number of functions must be the number of overridable functions plus any dunder methods."
     assert num_total >= len(FLAT_OVERRIDABLE_FUNCTIONS), msg
-    # assert fraction_working > 0.8, f"Only {fraction_working*100:.1f} % of torch functions are covered (req >80%)."
+    assert fraction_working > 0.8, f"Only {fraction_working*100:.1f} % of torch functions are covered (req >80%)."
 
 
 ## Indexing functions
