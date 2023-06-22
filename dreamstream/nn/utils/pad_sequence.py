@@ -42,7 +42,6 @@ def pad_chunks(
 def pad_full_sequence(sequences, names: List[str], ids: List[str], batch_first: bool = False) -> StreamTensor:
     sos = torch.full((len(sequences),), True, dtype=torch.bool)
     eos = torch.full((len(sequences),), True, dtype=torch.bool)
-
     return pad_chunks(sequences=sequences, names=names, ids=ids, sos=sos, eos=eos, batch_first=batch_first)
 
 

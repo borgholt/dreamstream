@@ -1,5 +1,6 @@
 import functools
 from copy import deepcopy
+import math
 from typing import Any, Callable, NamedTuple, Optional, List, Sequence, Tuple, Union
 from torch.types import Number
 
@@ -12,6 +13,7 @@ from torch import Tensor
 from dreamstream.tensor import StreamTensor, StreamMetadata, decouple_recursive
 from dreamstream.func_coverage import CUSTOMIZED_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
+from dreamstream.utils.operations import sequence_mask
 from dreamstream.warnings import fallback_operation_warning
 
 
@@ -249,7 +251,10 @@ def conv1d(
     output = torch.conv1d(input, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
     output.rename_(*names)
     meta.lengths = output_lengths
-    # TODO: Consider whether to zero out the padding.
+
+    # Zero out the padding.
+    mask = sequence_mask(output_lengths, max_len=output.size(-1), device=output.device)
+    output *= mask.unsqueeze(1)
     return StreamTensor(output, meta)
 
 

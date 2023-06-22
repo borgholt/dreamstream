@@ -1,9 +1,7 @@
-import types
-
 import torch
 
-from dreamstream.tensor import StreamTensor, StreamMetadata
-from dreamstream.patches.modes import add_streaming_modes, online, offline
+from dreamstream.tensor import StreamTensor
+from dreamstream.patches.modes import add_streaming_modes
 from dreamstream.nn.utils import pad_stream_tensor
 
 
@@ -73,70 +71,3 @@ def patch_conv_1d(module):
     module.register_forward_hook(conv_1d_post_hook)
 
     return module
-
-
-if __name__ == "__main__":
-    import os
-    import argparse
-    from random import randint
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-    parser = argparse.ArgumentParser()
-
-    # configuration of layer
-    parser.add_argument("--in_channels", default=32, type=int)
-    parser.add_argument("--out_channels", default=64, type=int)
-    parser.add_argument("--kernel_size", default=3, type=int)
-    parser.add_argument("--stride", default=2, type=int)
-
-    # configuration of test input
-    parser.add_argument("--input_min_length", default=1000, type=int)
-    parser.add_argument("--input_max_length", default=2000, type=int)
-    parser.add_argument("--input_min_chunk_size", default=50, type=int)
-    parser.add_argument("--input_max_chunk_size", default=50, type=int)
-    parser.add_argument("--input_batch_size", default=32, type=int)
-
-    args, _ = parser.parse_known_args()
-
-    assert args.input_min_length <= args.input_max_length
-    assert args.input_min_chunk_size <= args.input_max_chunk_size
-
-    N = 20_000
-    stream_inputs, stream_batch_inputs, inputs = [], [], []
-    for n in range(N):
-        x1 = torch.rand(1, 32, randint(1, 20))
-        # x2 = pad_sequence([x1, torch.rand(1, 32, randint(args.kernel_size, 50))], batch_first=True, padding_value=0)
-        ss1 = StreamMetadata(ids=["test_1"], lengths=[x1.size(-1)], sos=[n == 0], eos=[n == N - 1])
-        # ss2 = StreamMetadata(ids=["test_1", "test_2"], lengths=[x1.size(-1), x2.size(-1)], first=[n == 0] * 2,
-        # last=[n == N - 1] * 2)
-        xs1 = StreamTensor(x1, meta=ss1)
-        # xs2 = StreamTensor(x2, meta=ss2)
-        stream_inputs.append(xs1)
-        # stream_batch_inputs.append(xs2)
-        inputs.append(x1)
-
-    x_full = torch.cat(inputs, dim=-1)
-    s = StreamMetadata(ids=["test_2"], lengths=[x_full.size(-1)], sos=[True], eos=[True])
-    x_full_stream = StreamTensor(x_full, meta=s)
-
-    conv1d = torch.nn.Conv1d(args.in_channels, args.out_channels, args.kernel_size, args.stride, padding=2)
-
-    y1 = conv1d(x_full)
-
-    conv1d = patch_conv_1d(conv1d)
-    conv1d.online()
-
-    y2 = conv1d(x_full_stream)
-
-    ys = []
-    for x in stream_inputs:
-        y = conv1d(x)
-        if y is None:
-            print("skipping")
-            continue
-        ys.append(y)
-    y3 = torch.cat([torch.Tensor(y_) for y_ in ys], dim=-1)
-
-    assert torch.allclose(y1, y2, rtol=0, atol=0)
-    assert torch.allclose(y1, y3, rtol=1e-6, atol=1e-6)
