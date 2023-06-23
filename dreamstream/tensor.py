@@ -237,7 +237,7 @@ class StreamMetadata:
         new_meta.__dict__.update(self.__dict__)
         return new_meta
 
-    def __deepcopy__(self, memo):
+    def __deepcopy__(self, memo: Optional[dict] = None):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
             ids=deepcopy(self.ids),
