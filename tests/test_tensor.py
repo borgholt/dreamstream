@@ -1,17 +1,17 @@
-import collections
+# import collections
 
 import pytest
 import torch
 
 from dreamstream.tensor import StreamTensor, as_stream_tensor, stream_tensor, stream_metadata, LENGTH, BATCH
-from dreamstream.func_coverage import (
-    DECOUPLE_FUNCTIONS,
-    FLAT_OVERRIDABLE_FUNCTIONS,
-    CUSTOMIZED_FUNCTIONS,
-    RECOUPLE_FUNCTIONS,
-    UNSUPPORTED_FUNCTIONS,
-    VALID_FUNCTIONS,
-)
+# from dreamstream.func_coverage import (
+#     DECOUPLE_FUNCTIONS,
+#     FLAT_OVERRIDABLE_FUNCTIONS,
+#     CUSTOMIZED_FUNCTIONS,
+#     RECOUPLE_FUNCTIONS,
+#     UNSUPPORTED_FUNCTIONS,
+#     VALID_FUNCTIONS,
+# )
 from dreamstream.overrides import join_dim_names
 
 

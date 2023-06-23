@@ -1,11 +1,9 @@
 import random
-from typing import List
 
 import pytest
 import torch
 
 from dreamstream.nn.utils.pad_sequence import pad_full_sequence, pad_stream_tensor
-from dreamstream.tensor import StreamTensor
 from dreamstream.utils.flags import BATCH, LENGTH
 
 
@@ -13,11 +11,15 @@ torch.manual_seed(42)
 random.seed(42)
 
 
-BATCH_SIZE = 32
+BATCH_SIZE = 8
+SAMPLE_RATE = 1000
+WAVEFORM_MIN_SECONDS = 3
+WAVEFORM_MAX_SECONDS = 7
+WAVEFORM_CHUNK_MIN_SECONDS = 1
+WAVEFORM_CHUNK_MAX_SECONDS = 2
 
 
 def random_chunks(full_length, min_size: int = 1000, max_size: int = 8000):
-    """Generate a number of random chunks of different lengths that sum up to `full_length`."""
     chunks = []
     chunk_sum, remaining = 0, full_length
     while remaining > 0:
@@ -28,9 +30,12 @@ def random_chunks(full_length, min_size: int = 1000, max_size: int = 8000):
 
 
 @pytest.fixture
-def sequences():
-    """A number of sequences of different lengths of size `BATCH_SIZE`. Size (16, L) of `torch.rand` values."""
-    return [torch.rand(16, random.randint(200, 1000)) for i in range(BATCH_SIZE)]
+def waveforms():
+    """A number of waveform sequences of different lengths of size `BATCH_SIZE`. Size (16, L) of `torch.rand` values."""
+    return [
+        torch.rand(1, random.randint(SAMPLE_RATE * WAVEFORM_MIN_SECONDS, SAMPLE_RATE * WAVEFORM_MAX_SECONDS))
+        for i in range(BATCH_SIZE)
+    ]
 
 
 @pytest.fixture
@@ -40,12 +45,20 @@ def ids():
 
 
 @pytest.fixture
-def batches_of_chunks(sequences, ids) -> List[StreamTensor]:
-    """Batches of chunks of different lengths from the `sequences` data."""
-    data = pad_full_sequence(sequences, names=("F", LENGTH), ids=ids).align_to(BATCH, "F", LENGTH)
+def batches_of_waveform_chunks(waveforms, ids):
+    """Batches of chunks of waveforms of varying lengths from the `waveforms` data."""
+    data = pad_full_sequence(waveforms, names=("F", LENGTH), ids=ids).align_to("B", "F", "L")
     data = data.unpad_sequence()
     data = {
-        _id: s.split(random_chunks(s.size(LENGTH), min_size=100, max_size=200), dim=1) for _id, s in zip(ids, data)
+        _id: s.split(
+            random_chunks(
+                s.size("L"),
+                min_size=SAMPLE_RATE * WAVEFORM_CHUNK_MIN_SECONDS,
+                max_size=SAMPLE_RATE * WAVEFORM_CHUNK_MAX_SECONDS,
+            ),
+            dim=1,
+        )
+        for _id, s in zip(ids, data)
     }
 
     def num_remaining_chunks(data):

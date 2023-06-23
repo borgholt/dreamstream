@@ -9,25 +9,25 @@ from dreamstream.data.data_objects import OutputCollector
 
 class TestConvs:
     test_modules = [
-        nn.Conv1d(16, 16, kernel_size=1, padding=0),
-        nn.Conv1d(16, 16, kernel_size=1, padding=1),
-        nn.Conv1d(16, 16, kernel_size=3, padding=0),
-        nn.Conv1d(16, 16, kernel_size=3, padding=1),
-        nn.Conv1d(16, 16, kernel_size=4, padding=0),
-        nn.Conv1d(16, 16, kernel_size=4, padding=2),
-        nn.Conv1d(16, 16, kernel_size=5, padding=0),
-        nn.Conv1d(16, 16, kernel_size=5, padding=2),
-        nn.Conv1d(16, 16, kernel_size=5, padding=2, stride=2),
-        nn.Conv1d(16, 16, kernel_size=5, padding=2, stride=2),
+        nn.Conv1d(1, 4, kernel_size=1, padding=0),
+        nn.Conv1d(1, 4, kernel_size=1, padding=1),
+        nn.Conv1d(1, 4, kernel_size=3, padding=0),
+        nn.Conv1d(1, 4, kernel_size=3, padding=1),
+        nn.Conv1d(1, 4, kernel_size=4, padding=0),
+        nn.Conv1d(1, 4, kernel_size=4, padding=2),
+        nn.Conv1d(1, 4, kernel_size=5, padding=0),
+        nn.Conv1d(1, 4, kernel_size=5, padding=2),
+        nn.Conv1d(1, 4, kernel_size=5, padding=2, stride=2),
+        nn.Conv1d(1, 4, kernel_size=5, padding=2, stride=2),
         nn.Sequential(
-            nn.Conv1d(16, 16, kernel_size=3, padding=1),
-            nn.Conv1d(16, 16, kernel_size=5, padding=2),
+            nn.Conv1d(1, 4, kernel_size=3, padding=1),
+            nn.Conv1d(4, 4, kernel_size=5, padding=2),
         ),
         nn.Sequential(
-            nn.Conv1d(16, 16, kernel_size=3, padding=1, stride=2),
-            nn.Conv1d(16, 16, kernel_size=5, padding=2, stride=2),
+            nn.Conv1d(1, 4, kernel_size=3, padding=1, stride=2),
+            nn.Conv1d(4, 4, kernel_size=5, padding=2, stride=2),
         ),
-        torchaudio.models.Wav2Letter(num_classes=40, input_type="mfcc", num_features=16),
+        torchaudio.models.Wav2Letter(num_classes=40, input_type="mfcc", num_features=1),  # Too slow for remote CI.
     ]
 
     def recursive_assert(self, module):
@@ -43,14 +43,14 @@ class TestConvs:
         module.apply(self.recursive_assert)
 
     @pytest.mark.parametrize("module", test_modules)
-    def test_equivalence(self, sequences, ids, batches_of_chunks, module):
+    def test_equivalence(self, waveforms, ids, batches_of_waveform_chunks, module):
         with torch.inference_mode():
-            targets = {_id: module(s.unsqueeze(0)) for _id, s in zip(ids, sequences)}
+            targets = {_id: module(s.unsqueeze(0)) for _id, s in zip(ids, waveforms)}
 
         stream_output = OutputCollector()
         module.online()
         with torch.inference_mode():
-            for x in batches_of_chunks:
+            for x in batches_of_waveform_chunks:
                 y = module(x)
                 stream_output.update(y)
 

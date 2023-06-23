@@ -138,7 +138,7 @@ for func_name in tqdm(func_names):
             input_valid = True
             break
 
-        except Exception as e:
+        except Exception:
             if i == 3:
                 no_valid_input_found.append(func_name)
 
@@ -155,7 +155,7 @@ for func_name in tqdm(func_names):
                 compare_tensors(test_out, out)
                 default_valid_funcs.append(func_name)
             continue
-        except Exception as e:
+        except Exception:
             pass
 
         try:
@@ -170,7 +170,7 @@ for func_name in tqdm(func_names):
                 compare_tensors(test_out, out)
                 recouple_funcs.append(func_name)
             continue
-        except Exception as e:
+        except Exception:
             pass
 
         no_valid_output.append(func_name)

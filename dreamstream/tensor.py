@@ -57,21 +57,21 @@ class StreamMetadata:
 
     def __init__(
         self,
-        ids: Union[str, List[str]],
-        sos: Union[bool, List[bool], torch.BoolTensor],
-        eos: Union[bool, List[bool], torch.BoolTensor],
-        lengths: Union[int, List[int], torch.IntTensor],
-        chunk_indices: Optional[Union[int, List[int], torch.IntTensor]] = None,
+        ids: Union[str, Sequence[str]],
+        sos: Union[bool, Sequence[bool], torch.BoolTensor],
+        eos: Union[bool, Sequence[bool], torch.BoolTensor],
+        lengths: Union[int, Sequence[int], torch.IntTensor],
+        chunk_indices: Optional[Union[int, Sequence[int], torch.IntTensor]] = None,
     ):
         # TODO: Make initialization lazy such that it only happens when the StreamMetadata is actually used.
-        if isinstance(ids, str):
-            ids = [ids]
+        if not isinstance(ids, tuple):
+            ids = tuple(ids)
         if isinstance(lengths, int):
-            lengths = [lengths]
+            lengths = tuple(lengths)
         if isinstance(sos, bool):
-            sos = [sos]
+            sos = tuple(sos)
         if isinstance(eos, bool):
-            eos = [eos]
+            eos = tuple(eos)
 
         if not len(ids) == len(lengths) == len(sos) == len(eos):
             raise ValueError("ids, lengths, sos and eos must have the same length.")
@@ -239,7 +239,7 @@ class StreamMetadata:
         new_meta.__dict__.update(self.__dict__)
         return new_meta
 
-    def __deepcopy__(self, memo=None):
+    def __deepcopy__(self, memo: Optional[dict] = None):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
             ids=deepcopy(self.ids),
@@ -349,7 +349,7 @@ class StreamMetadata:
             return StreamMetadata(ids, sos, eos, lengths)
 
         if isinstance(indices, int):
-            ids = [self.ids[indices]]
+            ids = tuple(self.ids[indices])
             sos = self.sos[[indices]]
             eos = self.eos[[indices]]
             lengths = self.lengths[[indices]]
@@ -358,7 +358,7 @@ class StreamMetadata:
         if isinstance(indices, slice):
             ids = self.ids[indices]
         else:  # List[int], Tuple[int, ...], torch.IntTensor
-            ids = [self.ids[i] for i in indices]
+            ids = tuple(self.ids[i] for i in indices)
 
         sos = self.sos[indices]
         eos = self.eos[indices]
@@ -568,10 +568,10 @@ class StreamMetadata:
 
         if isinstance(split_size_or_sections, int):
             start = range(0, len(self), split_size_or_sections)
-            split_ids = [self.ids[i : i + split_size_or_sections] for i in start]
+            split_ids = tuple(self.ids[i : i + split_size_or_sections] for i in start)
         else:
             slices = np.cumsum([0] + split_size_or_sections)
-            split_ids = [self.ids[i:j] for i, j in zip(slices[:-1], slices[1:])]
+            split_ids = tuple(self.ids[i:j] for i, j in zip(slices[:-1], slices[1:]))
 
         split_first = self.sos.split(split_size_or_sections)
         split_last = self.eos.split(split_size_or_sections)
@@ -725,7 +725,7 @@ class StreamTensor(torch.Tensor):
         if not all(s == metas[0] for s in metas[1:]):
             msg = (
                 f"Called a torch function ({func.__name__}) which was not handled by "
-                f"StreamTensor.__torch_function__ with {len(metas)} StreamTensors in the input."
+                f"StreamTensor.__torch_function__ with {len(metas)} StreamTensors in the input. "
                 f"In this case the function can only be handled if the StreamTensors have equal metadata,"
                 f"but they were not equal."
             )

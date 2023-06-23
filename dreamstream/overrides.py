@@ -1,11 +1,9 @@
 import functools
 from copy import deepcopy
-import math
 from typing import Any, Callable, NamedTuple, Optional, List, Sequence, Tuple, Union
 from torch.types import Number
 
 import numpy as np
-import rich
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -90,6 +88,44 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
     tensor = torch.cat(tensors, dim=dim, out=out)
     return StreamTensor(tensor, meta)
+
+
+@implements(torch.stack)
+def stack(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
+    """If dim is the batch dimension of any StreamTensor, assert all are StreamTensors and stack the stream states as
+    well. Else, call torch.stack.
+    """
+    if len(tensors) == 1:
+        return tensors[0].unsqueeze(dim)
+
+    # If all StreamTensors have the same metas, then just stack the tensors.
+    metas = [t.meta for t in tensors if isinstance(t, StreamTensor)]
+    if all(m == metas[0] for m in metas):
+        torch_tensors = [t.tensor() if isinstance(t, StreamTensor) else t for t in tensors]
+        tensor = torch.stack(torch_tensors, dim=dim, out=out)
+        names = tensors[0].names
+        names = names[:dim] + (None,) + names[dim:]
+        return StreamTensor(tensor.rename_(*names), metas[0])
+
+    # If not all StreamTensors have the same metas, then we can only stack them if 
+    # 1, They all have exactly one id
+    # 2. All StreamTensors have different ids.
+    # 3. All tensors are StreamTensors.
+    if not all(isinstance(t, StreamTensor) for t in tensors):
+        raise ValueError("Cannot stack StreamTensors with different stream states together with torch.Tensors.")
+    
+    if not all(len(t.meta.ids) == 1 for t in tensors):
+        raise ValueError("Can only stack StreamTensors with different ids together when they each have one id.")
+
+    if len(set(t.meta.ids[0] for t in tensors)) != len(tensors):
+        raise ValueError("Can only stack StreamTensors with different ids together when they each have different ids.")
+
+    # If we get here, then each StreamTensor has one id and all have different ids.
+    torch_tensors = [t.tensor() if isinstance(t, StreamTensor) else t for t in tensors]
+    tensor = torch.stack(torch_tensors, dim=dim, out=out)
+    names = tensors[0].names
+    names = names[:dim] + (None,) + names[dim:]
+    return StreamTensor(tensor.rename_(*names), metas[0])
 
 
 @implements(torch.permute)
@@ -522,10 +558,19 @@ def __getitem__(self: StreamTensor, indices: Union[IndexingType, Sequence[Indexi
         affected_dims = [affected_dims]
         indices = [indices]
 
-    batch_dim = names.index(BATCH)
-    length_dim = names.index(LENGTH)
-    is_batch_dim_affected = any([dim == batch_dim for dim in dims_affected_flat])
-    is_length_dim_affected = any([dim == length_dim for dim in dims_affected_flat])
+    try:
+        batch_dim = names.index(BATCH)
+        is_batch_dim_affected = any([dim == batch_dim for dim in dims_affected_flat])
+    except ValueError:
+        batch_dim = None
+        is_batch_dim_affected = False
+
+    try:
+        length_dim = names.index(LENGTH)
+        is_length_dim_affected = any([dim == length_dim for dim in dims_affected_flat])
+    except ValueError:
+        length_dim = None
+        is_length_dim_affected = False
 
     if not (is_batch_dim_affected or is_length_dim_affected):
         # Indexing operation does not affect the batch or length dimensions, return the indexed tensor with same meta.
