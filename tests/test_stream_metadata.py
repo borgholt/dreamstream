@@ -1,10 +1,14 @@
+import time
+
 from dreamstream.tensor import LazyInit, LazyProxy
+from dreamstream.utils.timing import timeit
 
 
 class TestObject():
     def __init__(self, *args, **kwargs):
         self.args = args
         self.kwargs = kwargs
+        time.sleep(0.1)
 
 
 class LazyTestObject(LazyInit):
@@ -33,3 +37,9 @@ class TestLazy():
     def test_lazy_init(self):
         lazy_init = LazyTestObject(1, 2, 3, a=1, b=2, c=3)
         assert isinstance(lazy_init, LazyProxy)
+
+    def test_lazy_init_time_saved(self):
+        """Test that lazy initialization indeed saves time."""
+        lazy_timing = timeit("LazyTestObject(1, 2, 3, a=1, b=2, c=3)", globals=globals())
+        init_timing = timeit("TestObject(1, 2, 3, a=1, b=2, c=3)", globals=globals())
+        assert lazy_timing.median < init_timing.median / 100
