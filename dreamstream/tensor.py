@@ -351,7 +351,8 @@ class StreamMetadata(LazyInit):
             and self.sos.equal(other.sos)
             and self.eos.equal(other.eos)
             and self.lengths.equal(other.lengths)
-            and (self._chunk_indices is None and other._chunk_indices is None) or self._chunk_indices.equal(other.lengths)
+            and (self._chunk_indices is None and other._chunk_indices is None)
+            or self._chunk_indices.equal(other.lengths)
         )
 
     def __len__(self) -> int:
