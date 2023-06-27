@@ -32,69 +32,7 @@ from dreamstream import warnings
 # they are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the graph.
 
 
-class LazyProxy(object):
-    """A proxy class that lazily instantiates an object of type cls with arguments *args and **kwargs."""
-
-    def __init__(self, cls, *args, **kwargs):
-        self.__dict__["_cls"] = cls
-        self.__dict__["_args"] = args
-        self.__dict__["_kwargs"] = kwargs
-        self.__dict__["_obj"] = None
-
-    def __getattr__(self, name):
-        if self.__dict__["_obj"] is None:
-            self.__init_obj()
-
-        return getattr(self.__dict__["_obj"], name)
-
-    def __setattr__(self, name, value):
-        if self.__dict__["_obj"] is None:
-            self.__init_obj()
-
-        setattr(self.__dict__["_obj"], name, value)
-
-    def __getitem__(self, key):
-        if self.__dict__["_obj"] is None:
-            self.__init_obj()
-
-        return self.__dict__["_obj"].__getitem__(key)
-
-    def __copy__(self):
-        if self.__dict__["_obj"] is None:
-            self.__init_obj()
-
-        return self.__dict__["_obj"].__copy__()
-
-    def __eq__(self, other):
-        if self.__dict__["_obj"] is None:
-            self.__init_obj()
-
-        return self.__dict__["_obj"].__eq__(other)
-
-    def __len__(self):
-        if self.__dict__["_obj"] is None:
-            self.__init_obj()
-
-        return self.__dict__["_obj"].__len__()
-
-    def __repr__(self):
-        if self.__dict__["_obj"] is None:
-            return f"LazyProxy({self.__dict__['_cls'].__name__}, {self.__dict__['_args']}, {self.__dict__['_kwargs']})"
-        return self.__dict__["_obj"].__repr__()
-
-    def __init_obj(self):
-        self.__dict__["_obj"] = object.__new__(self.__dict__["_cls"])
-        self.__dict__["_obj"].__init__(*self.__dict__["_args"], **self.__dict__["_kwargs"])
-
-
-class LazyInit(object):
-    """A class that lazily initializes its attributes."""
-
-    def __new__(cls, *args, **kwargs):
-        return LazyProxy(cls, *args, **kwargs)
-
-
-class StreamMetadata(LazyInit):
+class StreamMetadata:
     """Metadata associated with a batch of streamed input tensors."""
 
     __slots__ = [
@@ -119,17 +57,19 @@ class StreamMetadata(LazyInit):
 
     def __init__(
         self,
-        ids: Union[str, List[str]],
-        sos: Union[bool, List[bool], torch.BoolTensor],
-        eos: Union[bool, List[bool], torch.BoolTensor],
-        lengths: Union[int, List[int], torch.IntTensor],
-        chunk_indices: Optional[Union[int, List[int], torch.IntTensor]] = None,
+        ids: Union[str, Tuple[str]],
+        sos: Union[bool, Tuple[bool], torch.BoolTensor],
+        eos: Union[bool, Tuple[bool], torch.BoolTensor],
+        lengths: Union[int, Tuple[int], torch.IntTensor],
+        chunk_indices: Optional[Union[int, Tuple[int], torch.IntTensor]] = None,
         _copy_on_init: bool = False,
     ):
         super().__init__()
 
         if isinstance(ids, str):
-            ids = [ids]
+            ids = (ids,)
+        elif isinstance(ids, Sequence):
+            ids = tuple(ids)
         if isinstance(lengths, int):
             lengths = tuple(lengths)
         if isinstance(sos, bool):
@@ -327,8 +267,10 @@ class StreamMetadata(LazyInit):
             and self.sos.equal(other.sos)
             and self.eos.equal(other.eos)
             and self.lengths.equal(other.lengths)
-            and (self._chunk_indices is None and other._chunk_indices is None)
-            or self._chunk_indices.equal(other.lengths)
+            and (
+                (self._chunk_indices is None and other._chunk_indices is None)
+                or self._chunk_indices.equal(other.lengths)
+            )
         )
 
     def __len__(self) -> int:
@@ -415,7 +357,7 @@ class StreamMetadata(LazyInit):
             raise IndexError(f"Expected batch indices to be a 1-dimensional tensor, but got {indices.ndim} dimensions.")
 
         if isinstance(indices, torch.BoolTensor):
-            ids = [id for i, id in enumerate(self.ids) if indices[i]]
+            ids = tuple(id for i, id in enumerate(self.ids) if indices[i])
             sos = self.sos[indices]
             eos = self.eos[indices]
             lengths = self.lengths[indices]
@@ -423,11 +365,11 @@ class StreamMetadata(LazyInit):
             return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
         if isinstance(indices, int):
-            ids = tuple(self.ids[indices])
-            sos = self.sos[[indices]]
-            eos = self.eos[[indices]]
-            lengths = self.lengths[[indices]]
-            chunk_indices = self._chunk_indices[[indices]] if self._chunk_indices is not None else None
+            ids = (self.ids[indices],)
+            sos = self.sos[indices].unsqueeze_(0)
+            eos = self.eos[indices].unsqueeze_(0)
+            lengths = self.lengths[indices].unsqueeze_(0)
+            chunk_indices = self._chunk_indices[indices].unsqueeze_(0) if self._chunk_indices is not None else None
             return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
         if isinstance(indices, slice):
@@ -478,7 +420,7 @@ class StreamMetadata(LazyInit):
             return self.__deepcopy__()
 
         if not keep_ids.all():
-            ids = [id for i, id in enumerate(self.ids) if keep_ids[i]]
+            ids = tuple(id for i, id in enumerate(self.ids) if keep_ids[i])
             sos = self.sos[keep_ids]
             eos = self.eos[keep_ids]
             lengths = self.lengths[keep_ids]
@@ -596,7 +538,7 @@ class StreamMetadata(LazyInit):
         if len(metas) == 1:
             return deepcopy(metas[0])
 
-        ids = list(itertools.chain.from_iterable([s.ids for s in metas]))
+        ids = tuple(itertools.chain.from_iterable(s.ids for s in metas))
         sos = torch.cat([s.sos for s in metas], dim=0)
         eos = torch.cat([s.eos for s in metas], dim=0)
         lengths = torch.cat([s.lengths for s in metas], dim=0)
@@ -724,19 +666,19 @@ class MultiLengthStreamMetadata:
 
 
 def stream_metadata(
-    ids: Union[str, List[str]],
-    sos: Union[bool, List[bool], torch.BoolTensor],
-    eos: Union[bool, List[bool], torch.BoolTensor],
-    lengths: Union[int, List[int], torch.IntTensor],
-    chunk_indices: Optional[Union[int, List[int], torch.IntTensor]] = None,
+    ids: Union[str, Tuple[str]],
+    sos: Union[bool, Tuple[bool], torch.BoolTensor],
+    eos: Union[bool, Tuple[bool], torch.BoolTensor],
+    lengths: Union[int, Tuple[int], torch.IntTensor],
+    chunk_indices: Optional[Union[int, Tuple[int], torch.IntTensor]] = None,
 ) -> StreamMetadata:
     """Create a StreamMetadata object from the given arguments.
 
     Args:
-        ids (Union[str, List[str]]): The ids of the input tensors.
+        ids (Union[str, Tuple[str]]): The ids of the input tensors.
         sos (bool): Whether the input tensors are the first in a batch.
         eos (bool): Whether the input tensors are the last in a batch.
-        lengths (Union[int, List[int]]): The lengths of the input tensors.
+        lengths (Union[int, Tuple[int]]): The lengths of the input tensors.
         chunk_indices (int): The index of the chunk in the batch.
         num_chunks (Optional[int], optional): The number of chunks in the batch. Defaults to None.
 

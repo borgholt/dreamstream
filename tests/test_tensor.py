@@ -25,7 +25,7 @@ def test_data_3d():
 
 def test_meta_kwargs():
     return dict(
-        ids=["first", "middle", "last"],
+        ids=("first", "middle", "last"),
         sos=[True, False, False],
         eos=[False, False, True],
         lengths=[3, 3, 2],
@@ -107,7 +107,7 @@ def stream_tensor_bfld_fixture():
 )
 def test_instantiate_stream_tensor(data):
     """Test that we can instantiate a StreamTensor from different kinds of data."""
-    meta = stream_metadata(ids=["a", "b"], sos=[True, False], eos=[False, True], lengths=[3, 3])
+    meta = stream_metadata(ids=("a", "b"), sos=[True, False], eos=[False, True], lengths=[3, 3])
     tensor = stream_tensor(data, meta, names=(BATCH, LENGTH))
 
     assert isinstance(tensor, StreamTensor)
@@ -294,7 +294,7 @@ class TestNarrow:
     def test_narrow_batch(self, stream_tensor_bfl_fixture):
         """Test `torch.narrow` on a StreamTensor when applied to batch, length, and feature dimensions."""
         assert_kwargs = dict(
-            ids=["middle", "last"],
+            ids=("middle", "last"),
             lengths=[3, 2],
             sos=[False, False],
             eos=[False, True],
@@ -313,7 +313,7 @@ class TestNarrow:
         s = stream_tensor_bfl_fixture.narrow(dim=1, start=1, length=1)
         assert isinstance(s, StreamTensor)
         assert torch.equal(s.tensor(), stream_tensor_bfl_fixture.tensor().narrow(dim=1, start=1, length=1))
-        assert s.meta.ids == ["first", "middle", "last"]
+        assert s.meta.ids == ("first", "middle", "last")
         assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s.meta.lengths, torch.tensor([3, 3, 2]))
@@ -323,7 +323,7 @@ class TestNarrow:
         s = stream_tensor_bfl_fixture.narrow(dim=2, start=1, length=2)
         assert isinstance(s, StreamTensor)
         assert torch.equal(s.tensor(), stream_tensor_bfl_fixture.tensor().narrow(dim=2, start=1, length=2))
-        assert s.meta.ids == ["first", "middle", "last"]
+        assert s.meta.ids == ("first", "middle", "last")
         assert torch.equal(s.meta.sos, torch.tensor([False, False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s.meta.lengths, torch.tensor([2, 2, 1]))
@@ -370,7 +370,7 @@ class TestGather:
         s = stream_tensor_bfl_fixture.gather(dim=1, index=self.full_index)
         assert isinstance(s, StreamTensor)
         assert torch.equal(s.tensor(), stream_tensor_bfl_fixture.tensor().gather(dim=1, index=self.full_index))
-        assert s.meta.ids == ["first", "middle", "last"]
+        assert s.meta.ids == ("first", "middle", "last")
         assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s.meta.lengths, torch.tensor([3, 3, 2]))
@@ -380,7 +380,7 @@ class TestGather:
         s = stream_tensor_bfl_fixture.gather(dim=1, index=self.truncated_index)
         assert isinstance(s, StreamTensor)
         assert torch.equal(s.tensor(), stream_tensor_bfl_fixture.tensor().gather(dim=1, index=self.truncated_index))
-        assert s.meta.ids == ["first", "middle"]
+        assert s.meta.ids == ("first", "middle")
         assert torch.equal(s.meta.sos, torch.tensor([True, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False]))
         assert torch.equal(s.meta.lengths, torch.tensor([2, 2]))
@@ -403,7 +403,7 @@ class TestTakeAlongDim:
         assert torch.equal(
             s.tensor(), stream_tensor_bfl_fixture.tensor().take_along_dim(dim=1, indices=TestGather.full_index)
         )
-        assert s.meta.ids == ["first", "middle", "last"]
+        assert s.meta.ids == ("first", "middle", "last")
         assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s.meta.lengths, torch.tensor([3, 3, 2]))
@@ -424,7 +424,7 @@ class TestSelect:
         s = stream_tensor_bfl_fixture.select(dim=0, index=1)
         assert isinstance(s, StreamTensor)
         assert torch.equal(s.tensor(), stream_tensor_bfl_fixture.tensor().select(dim=0, index=1))
-        assert s.meta.ids == ["middle"]
+        assert s.meta.ids == ("middle",)
         assert torch.equal(s.meta.sos, torch.tensor([False]))
         assert torch.equal(s.meta.eos, torch.tensor([False]))
         assert torch.equal(s.meta.lengths, torch.tensor([3]))
@@ -434,7 +434,7 @@ class TestSelect:
         s = stream_tensor_bfl_fixture.select(dim=1, index=1)
         assert isinstance(s, StreamTensor)
         assert torch.equal(s.tensor(), stream_tensor_bfl_fixture.tensor().select(dim=1, index=1))
-        assert s.meta.ids == ["first", "middle", "last"]
+        assert s.meta.ids == ("first", "middle", "last")
         assert torch.equal(s.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s.meta.lengths, torch.tensor([3, 3, 2]))
@@ -444,7 +444,7 @@ class TestSelect:
         s = stream_tensor_bfl_fixture.select(dim=2, index=1)
         assert isinstance(s, StreamTensor)
         assert torch.equal(s.tensor(), stream_tensor_bfl_fixture.tensor().select(dim=2, index=1))
-        assert s.meta.ids == ["first", "middle", "last"]
+        assert s.meta.ids == ("first", "middle", "last")
         assert torch.equal(s.meta.sos, torch.tensor([False, False, False]))
         assert torch.equal(s.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s.meta.lengths, torch.tensor([1, 1, 1]))
@@ -458,7 +458,7 @@ class TestTake:
         s1 = stream_tensor_bfl_fixture.take(indices)
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor().take(indices))
-        assert s1.meta.ids == ["first"]
+        assert s1.meta.ids == ("first",)
         assert torch.equal(s1.meta.sos, torch.tensor([True]))
         assert torch.equal(s1.meta.eos, torch.tensor([False]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3]))
@@ -469,7 +469,7 @@ class TestTake:
         s2 = stream_tensor_bfl_fixture.take(indices)
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor().take(indices))
-        assert s2.meta.ids == ["first"]
+        assert s2.meta.ids == ("first",)
         assert torch.equal(s2.meta.sos, torch.tensor([False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False]))
         assert torch.equal(s2.meta.lengths, torch.tensor([2]))
@@ -481,7 +481,7 @@ class TestTake:
         s1 = stream_tensor_bfl_fixture.take(indices)
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor().take(indices))
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
@@ -493,7 +493,7 @@ class TestTake:
         s1 = stream_tensor_bfl_fixture.take(indices)
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor().take(indices))
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, False]))
         assert torch.equal(s1.meta.lengths, torch.tensor([1, 1, 1]))
@@ -504,7 +504,7 @@ class TestTake:
         s1 = stream_tensor_bfl_fixture.take(indices)
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor().take(indices))
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, False]))
         assert torch.equal(s1.meta.lengths, torch.tensor([1, 1, 0]))
@@ -516,7 +516,7 @@ class TestTake:
         s1 = stream_tensor_bfl_fixture.take(indices)
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor().take(indices))
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
@@ -531,7 +531,7 @@ class TestIndexSelect:
             torch.index_select,
             dim=0,
             index=torch.tensor([0, 2]),
-            ids=["first", "last"],
+            ids=("first", "last"),
             sos=torch.tensor([True, False]),
             eos=torch.tensor([False, True]),
             lengths=torch.tensor([3, 2]),
@@ -608,7 +608,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, 0, :]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, 0, :])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
@@ -620,7 +620,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[0]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[0])
-        assert s1.meta.ids == ["first"]  # changed to only the first example
+        assert s1.meta.ids == ("first",)  # changed to only the first example
         assert torch.equal(s1.meta.sos, torch.tensor([True]))
         assert torch.equal(s1.meta.eos, torch.tensor([False]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3]))
@@ -631,7 +631,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[1:]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[1:])
-        assert s1.meta.ids == ["middle", "last"]
+        assert s1.meta.ids == ("middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 2]))
@@ -641,7 +641,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[(0,)]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[(0,)])
-        assert s1.meta.ids == ["first"]
+        assert s1.meta.ids == ("first",)
         assert torch.equal(s1.meta.sos, torch.tensor([True]))
         assert torch.equal(s1.meta.eos, torch.tensor([False]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3]))
@@ -650,7 +650,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[(0, 1)]
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[(0, 1)])
-        assert s2.meta.ids == ["first"]
+        assert s2.meta.ids == ("first",)
         assert torch.equal(s2.meta.sos, torch.tensor([True]))
         assert torch.equal(s2.meta.eos, torch.tensor([False]))
         assert torch.equal(s2.meta.lengths, torch.tensor([3]))
@@ -659,7 +659,7 @@ class TestGetitem:
         s3 = stream_tensor_bfl_fixture[(0, 1, 2)]
         assert isinstance(s3, StreamTensor)
         assert torch.equal(s3.tensor(), stream_tensor_bfl_fixture.tensor()[(0, 1, 2)])
-        assert s3.meta.ids == ["first"]
+        assert s3.meta.ids == ("first",)
         assert torch.equal(s3.meta.sos, torch.tensor([False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False]))
         assert torch.equal(s3.meta.lengths, torch.tensor([1]))
@@ -668,7 +668,7 @@ class TestGetitem:
         s4 = stream_tensor_bfl_fixture[(0, 1, 0)]
         assert isinstance(s4, StreamTensor)
         assert torch.equal(s4.tensor(), stream_tensor_bfl_fixture.tensor()[(0, 1, 0)])
-        assert s4.meta.ids == ["first"]
+        assert s4.meta.ids == ("first",)
         assert torch.equal(s4.meta.sos, torch.tensor([True]))
         assert torch.equal(s4.meta.eos, torch.tensor([False]))
         assert torch.equal(s4.meta.lengths, torch.tensor([1]))
@@ -679,7 +679,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[[1]]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[[1]])
-        assert s1.meta.ids == ["middle"]
+        assert s1.meta.ids == ("middle",)
         assert torch.equal(s1.meta.sos, torch.tensor([False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3]))
@@ -688,7 +688,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[[0, 2]]
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[[0, 2]])
-        assert s2.meta.ids == ["first", "last"]
+        assert s2.meta.ids == ("first", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([True, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, True]))
         assert torch.equal(s2.meta.lengths, torch.tensor([3, 2]))
@@ -699,7 +699,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[torch.tensor([False, True, True])]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[torch.tensor([False, True, True])])
-        assert s1.meta.ids == ["middle", "last"]
+        assert s1.meta.ids == ("middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 2]))
@@ -710,7 +710,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[torch.tensor([1, 2])]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[torch.tensor([1, 2])])
-        assert s1.meta.ids == ["middle", "last"]
+        assert s1.meta.ids == ("middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 2]))
@@ -724,7 +724,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[:, :, 0]  # first length index
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, 0])
-        assert s2.meta.ids == ["first", "middle", "last"]
+        assert s2.meta.ids == ("first", "middle", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s2.meta.lengths, torch.tensor([1, 1, 1]))  # changed to 1
@@ -733,7 +733,7 @@ class TestGetitem:
         s3 = stream_tensor_bfl_fixture[:, :, 1]  # middle length index
         assert isinstance(s3, StreamTensor)
         assert torch.equal(s3.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, 1])
-        assert s3.meta.ids == ["first", "middle", "last"]
+        assert s3.meta.ids == ("first", "middle", "last")
         assert torch.equal(s3.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s3.meta.lengths, torch.tensor([1, 1, 1]))  # changed to 1
@@ -742,7 +742,7 @@ class TestGetitem:
         s4 = stream_tensor_bfl_fixture[:, :, -1]  # last length index
         assert isinstance(s4, StreamTensor)
         assert torch.equal(s4.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, -1])
-        assert s4.meta.ids == ["first", "middle", "last"]
+        assert s4.meta.ids == ("first", "middle", "last")
         assert torch.equal(s4.meta.sos, torch.tensor([False, False, False]))  # change to False
         assert torch.equal(s4.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s4.meta.lengths, torch.tensor([1, 1, 0]))  # changed to 1 and 0
@@ -758,7 +758,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[:, :, 1:]  # remove first length index
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, 1:])
-        assert s2.meta.ids == ["first", "middle", "last"]
+        assert s2.meta.ids == ("first", "middle", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all)
@@ -767,7 +767,7 @@ class TestGetitem:
         s3 = stream_tensor_bfl_fixture[:, :, :-1]  # remove last length index
         assert isinstance(s3, StreamTensor)
         assert torch.equal(s3.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, :-1])
-        assert s3.meta.ids == ["first", "middle", "last"]
+        assert s3.meta.ids == ("first", "middle", "last")
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since it was padding
@@ -776,7 +776,7 @@ class TestGetitem:
         s4 = stream_tensor_bfl_fixture[:, :, 1:-1]  # remove first and last length index
         assert isinstance(s4, StreamTensor)
         assert torch.equal(s4.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, 1:-1])
-        assert s4.meta.ids == ["first", "middle", "last"]
+        assert s4.meta.ids == ("first", "middle", "last")
         assert torch.equal(s4.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s4.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s4.meta.lengths, torch.tensor([1, 1, 1]))  # minus 2 for all but "last" since it was padding
@@ -785,7 +785,7 @@ class TestGetitem:
         s5 = stream_tensor_bfl_fixture[:, :, :-2]  # remove two last length indices
         assert isinstance(s5, StreamTensor)
         assert torch.equal(s5.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, :-2])
-        assert s5.meta.ids == ["first", "middle", "last"]
+        assert s5.meta.ids == ("first", "middle", "last")
         assert torch.equal(s5.meta.sos, torch.tensor([True, False, False]))  # changed to False
         assert torch.equal(s5.meta.eos, torch.tensor([False, False, False]))
         assert torch.equal(s5.meta.lengths, torch.tensor([1, 1, 1]))  # minus 2 for all but "last" since it was padding
@@ -794,7 +794,7 @@ class TestGetitem:
         s6 = stream_tensor_bfl_fixture[:, :, ::2]  # remove every other length index from start to end
         assert isinstance(s6, StreamTensor)
         assert torch.equal(s6.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, ::2])
-        assert s6.meta.ids == ["first", "middle", "last"]
+        assert s6.meta.ids == ("first", "middle", "last")
         assert torch.equal(s6.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s6.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s6.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -812,7 +812,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, :, indices[0]]  # remove first length index
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, indices[0]])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -821,7 +821,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[:, :, indices[1]]  # remove middle length index
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, indices[1]])
-        assert s2.meta.ids == ["first", "middle", "last"]
+        assert s2.meta.ids == ("first", "middle", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -830,7 +830,7 @@ class TestGetitem:
         s3 = stream_tensor_bfl_fixture[:, :, indices[2]]  # remove last length index
         assert isinstance(s3, StreamTensor)
         assert torch.equal(s3.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, indices[2]])
-        assert s3.meta.ids == ["first", "middle", "last"]
+        assert s3.meta.ids == ("first", "middle", "last")
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since was padding
@@ -841,7 +841,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, :, [1, 2]]  # remove first length index
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, [1, 2]])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -850,7 +850,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[:, :, [0, 2]]  # remove middle length index
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, [0, 2]])
-        assert s2.meta.ids == ["first", "middle", "last"]
+        assert s2.meta.ids == ("first", "middle", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -859,7 +859,7 @@ class TestGetitem:
         s3 = stream_tensor_bfl_fixture[:, :, [0, 1]]  # remove last length index
         assert isinstance(s3, StreamTensor)
         assert torch.equal(s3.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, [0, 1]])
-        assert s3.meta.ids == ["first", "middle", "last"]
+        assert s3.meta.ids == ("first", "middle", "last")
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since it was padding
@@ -870,7 +870,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, :, torch.tensor([1, 2])]  # remove first length index
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, torch.tensor([1, 2])])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -879,7 +879,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[:, :, torch.tensor([0, 2])]  # remove middle length index
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, torch.tensor([0, 2])])
-        assert s2.meta.ids == ["first", "middle", "last"]
+        assert s2.meta.ids == ("first", "middle", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -888,7 +888,7 @@ class TestGetitem:
         s3 = stream_tensor_bfl_fixture[:, :, torch.tensor([0, 1])]  # remove last length index
         assert isinstance(s3, StreamTensor)
         assert torch.equal(s3.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, torch.tensor([0, 1])])
-        assert s3.meta.ids == ["first", "middle", "last"]
+        assert s3.meta.ids == ("first", "middle", "last")
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s3.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but "last" since it was padding
@@ -899,7 +899,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, :, torch.tensor([False, True, True])]  # remove first length index
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, torch.tensor([False, True, True])])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -908,7 +908,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[:, :, torch.tensor([True, True, False])]  # remove last length index
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[:, :, torch.tensor([True, True, False])])
-        assert s2.meta.ids == ["first", "middle", "last"]
+        assert s2.meta.ids == ("first", "middle", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s2.meta.lengths, torch.tensor([2, 2, 2]))  # minus 1 for all but last since this was padding.
@@ -920,7 +920,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[indices]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[indices])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
@@ -934,7 +934,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, indices]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, indices])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
@@ -944,7 +944,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[:, indices]
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[:, indices])
-        assert s2.meta.ids == ["first", "middle", "last"]
+        assert s2.meta.ids == ("first", "middle", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))
         assert torch.equal(s2.meta.lengths, torch.tensor([1, 1, 1]))  # changed to 1
@@ -994,7 +994,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, indices]
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, indices])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([3, 3, 2]))
@@ -1020,7 +1020,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, 0, 0]  # first length index and first feature index
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, 0, 0])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.lengths, torch.tensor([1, 1, 1]))  # changed to 1
@@ -1034,7 +1034,7 @@ class TestGetitem:
         s1 = stream_tensor_bfl_fixture[:, 0, 1:]  # remove first length index and first feature index
         assert isinstance(s1, StreamTensor)
         assert torch.equal(s1.tensor(), stream_tensor_bfl_fixture.tensor()[:, 0, 1:])
-        assert s1.meta.ids == ["first", "middle", "last"]
+        assert s1.meta.ids == ("first", "middle", "last")
         assert torch.equal(s1.meta.sos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s1.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s1.meta.lengths, torch.tensor([2, 2, 1]))  # minus 1 for all
@@ -1048,7 +1048,7 @@ class TestGetitem:
             stream_tensor_bfl_fixture,
             torch.Tensor.__getitem__,
             (slice(None, -1), slice(None), slice(1, None)),  # [:-1, :, 1:]
-            ids=["first", "middle"],
+            ids=("first", "middle"),
             sos=torch.tensor([False, False]),
             eos=torch.tensor([False, False]),
             lengths=torch.tensor([2, 2]),
@@ -1060,7 +1060,7 @@ class TestGetitem:
         s1_1 = stream_tensor_bfl_fixture[0, ...]  # keep only first batch example
         assert isinstance(s1_1, StreamTensor)
         assert torch.equal(s1_1.tensor(), stream_tensor_bfl_fixture.tensor()[0, ...])
-        assert s1_1.meta.ids == ["first"]
+        assert s1_1.meta.ids == ("first",)
         assert torch.equal(s1_1.meta.sos, torch.tensor([True]))
         assert torch.equal(s1_1.meta.eos, torch.tensor([False]))
         assert torch.equal(s1_1.meta.lengths, torch.tensor([3]))
@@ -1069,7 +1069,7 @@ class TestGetitem:
         s1_2 = stream_tensor_bfl_fixture[0, ..., :]  # keep only first batch example
         assert isinstance(s1_2, StreamTensor)
         assert torch.equal(s1_2.tensor(), stream_tensor_bfl_fixture.tensor()[0, ..., :])
-        assert s1_2.meta.ids == ["first"]
+        assert s1_2.meta.ids == ("first",)
         assert torch.equal(s1_2.meta.sos, torch.tensor([True]))
         assert torch.equal(s1_2.meta.eos, torch.tensor([False]))
         assert torch.equal(s1_2.meta.lengths, torch.tensor([3]))
@@ -1078,7 +1078,7 @@ class TestGetitem:
         s1_3 = stream_tensor_bfl_fixture[0, :, ...]  # keep only first batch example
         assert isinstance(s1_3, StreamTensor)
         assert torch.equal(s1_1.tensor(), stream_tensor_bfl_fixture.tensor()[0, :, ...])
-        assert s1_3.meta.ids == ["first"]
+        assert s1_3.meta.ids == ("first",)
         assert torch.equal(s1_3.meta.sos, torch.tensor([True]))
         assert torch.equal(s1_3.meta.eos, torch.tensor([False]))
         assert torch.equal(s1_3.meta.lengths, torch.tensor([3]))
@@ -1087,7 +1087,7 @@ class TestGetitem:
         s1_4 = stream_tensor_bfl_fixture[0, ..., ...]  # keep only first batch example
         assert isinstance(s1_4, StreamTensor)
         assert torch.equal(s1_1.tensor(), stream_tensor_bfl_fixture.tensor()[0, ..., ...])
-        assert s1_4.meta.ids == ["first"]
+        assert s1_4.meta.ids == ("first",)
         assert torch.equal(s1_4.meta.sos, torch.tensor([True]))
         assert torch.equal(s1_4.meta.eos, torch.tensor([False]))
         assert torch.equal(s1_4.meta.lengths, torch.tensor([3]))
@@ -1096,7 +1096,7 @@ class TestGetitem:
         s2 = stream_tensor_bfl_fixture[..., 0]  # keep only first length index
         assert isinstance(s2, StreamTensor)
         assert torch.equal(s2.tensor(), stream_tensor_bfl_fixture.tensor()[..., 0])
-        assert s2.meta.ids == ["first", "middle", "last"]
+        assert s2.meta.ids == ("first", "middle", "last")
         assert torch.equal(s2.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s2.meta.eos, torch.tensor([False, False, False]))  # changed to False
         assert torch.equal(s2.meta.lengths, torch.tensor([1, 1, 1]))  # set to 1
@@ -1105,7 +1105,7 @@ class TestGetitem:
         s3 = stream_tensor_bfl_fixture[..., 0, ...]  # keep only first feature dim
         assert isinstance(s3, StreamTensor)
         assert torch.equal(s3.tensor(), stream_tensor_bfl_fixture.tensor()[..., 0, ...])
-        assert s3.meta.ids == ["first", "middle", "last"]
+        assert s3.meta.ids == ("first", "middle", "last")
         assert torch.equal(s3.meta.sos, torch.tensor([True, False, False]))
         assert torch.equal(s3.meta.eos, torch.tensor([False, False, True]))
         assert torch.equal(s3.meta.lengths, torch.tensor([3, 3, 2]))
