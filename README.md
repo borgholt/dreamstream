@@ -155,6 +155,9 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
     - Fail outright.
     - Fallback to a regular `torch.Tensor`.
     - Fallback to a different tensor subclass that is identical in behaviour to `torch.Tensor` but carries the frozen `StreamMetadata` along.
+- How do we deal with 
+  - Special tokens concatenated to the input? E.g. "translate" and "language" tokens in Whisper?
+  - Learnable tokens concatenated to the input sequence before an MHSA layer?
 
 ## Can we use DreamStream for training?
 
