@@ -102,7 +102,45 @@ class StateStore(dict):
 
 
 def rnn_pre_hook(self, inputs):
-    # TODO (JDH): Deal with initial hidden state here.
+    """
+    
+    Cases:
+    - Given state:
+      1. None
+      2. Tensor
+    - Given ids:
+      1. All are first
+      2. Some are first
+      3. None are first
+      4. All are last
+      5. Some are last
+      6. None are last
+      7. All are first and last
+      8. Some are first and some are last
+      9. None are first or last
+    - Hidden state store:
+      1. All ids are in the hidden state store
+      2. Some ids are in the hidden state store
+      3. No ids are in the hidden state store
+
+    Get hidden state (num_layers, batch_size, hidden_size).
+    If any of the ids are in the hidden state store, we must use that state (unless they are the first chunk, but they can't be if they are in the hidden state store).
+    Any first chunks must use the given initial state.
+      1. If all chunks are first chunks, we can use the given initial state whether it is None or Tensor.
+      2. If only some chunks are first chunks, we must use the given initial state for those chunks and the hidden
+         state store for the others by writing selectively.
+
+    Args:
+        self (nn.RNN): The current module.
+        inputs (Union[torch.Tensor, Tuple[torch.Tensor, Optional[torch.Tensor]]]): Inputs to `self.forward`.
+
+    Raises:
+        RuntimeError: If input is a StreamTensor and the module is not in online mode, or if the input is not a 
+            StreamTensor but the module is in online mode.
+
+    Returns:
+        (Union[torch.Tensor, Tuple[torch.Tensor, Optional[torch.Tensor]]]): Modified inputs to `self.forward`.
+    """
     x, state = get_tensor_and_state(inputs)
 
     input_is_stream_tensor = isinstance(x, StreamTensor)
@@ -115,34 +153,10 @@ def rnn_pre_hook(self, inputs):
     if not input_is_stream_tensor:
         raise RuntimeError("The input is expected to be StreamTensor when in online mode.")
 
-    # Cases:
-    # - Given state:
-    #   1. None
-    #   2. Tensor
-    # - Given ids:
-    #   1. All are first
-    #   2. Some are first
-    #   3. None are first
-    #   4. All are last
-    #   5. Some are last
-    #   6. None are last
-    #   7. All are first and last
-    #   8. Some are first and some are last
-    #   9. None are first or last
-    # - Hidden state store:
-    #   1. All ids are in the hidden state store
-    #   2. Some ids are in the hidden state store
-    #   3. No ids are in the hidden state store
-
-    # Get hidden state (num_layers, batch_size, hidden_size).
-    # If any of the ids are in the hidden state store, we must use that state (unless they are the first chunk, but they can't be if they are in the hidden state store).
-    # Any first chunks must use the given initial state.
-    #   1. If all chunks are first chunks, we can use the given initial state whether it is None or Tensor.
-    #   2. If only some chunks are first chunks, we must use the given initial state for those chunks and the hidden
-    #      state store for the others by writing selectively.
     # import IPython
     # IPython.embed(using=False)
 
+    # TODO (JDH): Deal with initial hidden state here.
     ids_without_state = [(i, _id) for i, _id in enumerate(x.meta.ids) if _id not in self.hidden_state_store]
     if any(ids_without_state):
         if len(ids_without_state) == len(x.meta.ids) and state is None:
@@ -159,7 +173,7 @@ def rnn_pre_hook(self, inputs):
             state = self.hidden_state_store[x.meta.ids]
         else:
             # Some ids have state but a custom state is given too.
-            # TODO (JDH): Speed this up by using torch.select_scatter or similar directly on the given state
+            # TODO (JDH): Speed this up by using torch.select_scatter or similar directly on the given state.
             for i, _id in ids_without_state:
                 self.hidden_state_store[_id] = state[:, i, :].unsqueeze(1)
             state = self.hidden_state_store[x.meta.ids]

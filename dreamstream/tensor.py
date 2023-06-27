@@ -666,12 +666,13 @@ class StreamMetadata(LazyInit):
         split_sos = self.sos.split(split_size_or_sections)
         split_eos = self.eos.split(split_size_or_sections)
         split_lengths = self.lengths.split(split_size_or_sections)
-        split_chunk_indices = (
-            self.chunk_indices.split(split_size_or_sections) if self.chunk_indices is not None else None
-        )
-        args_iter = zip(split_ids, split_sos, split_eos, split_lengths, split_chunk_indices)
+        if self.chunk_indices is not None:
+            split_chunk_indices = self.chunk_indices.split(split_size_or_sections)
+        else:
+            split_chunk_indices = [None] * split_size_or_sections
 
-        return [stream_metadata(*args) for args in args_iter]
+        args_iter = zip(split_ids, split_sos, split_eos, split_lengths, split_chunk_indices)
+        return [StreamMetadata(*args) for args in args_iter]
 
     def split_length(self, split_size_or_sections: Union[int, List[int]]) -> List["StreamMetadata"]:
         """Split a StreamMetadata object into a list of StreamMetadata objects along the length dimension.

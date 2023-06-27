@@ -271,7 +271,7 @@ def assert_stream_tensor_and_meta_correct(stream_tensor, func, *args, ids, lengt
     t = func(torch_tensor, *args, **kwargs)
     assert isinstance(s, StreamTensor)
     assert torch.equal(s.tensor(), t)
-    assert s.meta.ids == ids
+    assert s.meta.ids == tuple(ids)
     assert torch.equal(s.meta.sos, torch.tensor(sos))
     assert torch.equal(s.meta.eos, torch.tensor(eos))
     assert torch.equal(s.meta.lengths, torch.tensor(lengths))
