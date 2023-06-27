@@ -351,7 +351,7 @@ class StreamMetadata(LazyInit):
             and self.sos.equal(other.sos)
             and self.eos.equal(other.eos)
             and self.lengths.equal(other.lengths)
-            and (self._chunk_indices is None and other._chunk_indices is None) or (self._chunk_indices.equal(other.lengths)
+            and (self._chunk_indices is None and other._chunk_indices is None) or self._chunk_indices.equal(other.lengths)
         )
 
     def __len__(self) -> int:
@@ -442,14 +442,16 @@ class StreamMetadata(LazyInit):
             sos = self.sos[indices]
             eos = self.eos[indices]
             lengths = self.lengths[indices]
-            return StreamMetadata(ids, sos, eos, lengths)
+            chunk_indices = self._chunk_indices[indices] if self._chunk_indices is not None else None
+            return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
         if isinstance(indices, int):
             ids = [self.ids[indices]]
             sos = self.sos[[indices]]
             eos = self.eos[[indices]]
             lengths = self.lengths[[indices]]
-            return StreamMetadata(ids, sos, eos, lengths)
+            chunk_indices = self._chunk_indices[[indices]] if self._chunk_indices is not None else None
+            return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
         if isinstance(indices, slice):
             ids = self.ids[indices]
@@ -459,7 +461,8 @@ class StreamMetadata(LazyInit):
         sos = self.sos[indices]
         eos = self.eos[indices]
         lengths = self.lengths[indices]
-        return StreamMetadata(ids, sos, eos, lengths)
+        chunk_indices = self._chunk_indices[indices] if self._chunk_indices is not None else None
+        return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
     def index_length(
         self, indices: Union[None, int, slice, List[int], Tuple[int], torch.IntTensor, torch.BoolTensor]
@@ -502,12 +505,14 @@ class StreamMetadata(LazyInit):
             sos = self.sos[keep_ids]
             eos = self.eos[keep_ids]
             lengths = self.lengths[keep_ids]
+            chunk_indices = self._chunk_indices[keep_ids] if self._chunk_indices is not None else None
             indices = indices[keep_ids]
         else:  # includes `broadcast_batch == True`
             ids = deepcopy(self.ids)
             sos = self.sos
             eos = self.eos
             lengths = self.lengths
+            chunk_indices = self._chunk_indices
 
         sos = sos & indices[:, 0]  # SOS only if the first index is included.
         if not broadcast_length:
@@ -517,8 +522,9 @@ class StreamMetadata(LazyInit):
             eos = eos & (start < lengths) & (lengths <= stop)
             # eos = eos & indices[range(indices.size(0)), lengths - 1]  # EOS only if the last non-padding is included.
             lengths = cumsum[keep_ids, lengths - 1]
+            chunk_indices = chunk_indices[keep_ids] if chunk_indices is not None else None
 
-        return StreamMetadata(ids, sos, eos, lengths)
+        return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
     def _index_length_int(self, index: int) -> "StreamMetadata":
         # Convert negative indices to positive
@@ -531,7 +537,8 @@ class StreamMetadata(LazyInit):
         # TODO (JDH): numba compiled arithmetic is much faster but slowed down due to conversion to/from numpy
         #   Maybe we should store sos and eos as numpy arrays instead of torch tensors?
         eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), self.lengths.numpy(), index))
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_slice(self, slice: slice) -> "StreamMetadata":
         # Convert start and stop to positive indices
@@ -552,7 +559,8 @@ class StreamMetadata(LazyInit):
 
         sos = self.sos.clone() if start == 0 and stop > 0 else torch.zeros_like(self.sos)
         eos = torch.from_numpy(update_eos_from_slice(self.eos.numpy(), self.lengths.numpy(), start, stop))
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_list(self, indices: Union[List[int], Tuple[int]]) -> "StreamMetadata":
         # Convert to numpy arrays for faster manipulation and numba jit support.
@@ -570,7 +578,8 @@ class StreamMetadata(LazyInit):
         sos = self.sos.clone() if min_i == 0 else torch.zeros_like(self.sos)
         eos = torch.from_numpy(update_eos_from_slice(self.eos.numpy(), lengths_np, min_i, max_i))
         # TODO (JDH): Keep EOS true if the indexing spans over the last non-padding element.
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_1d_tensor(self, indices: torch.Tensor) -> "StreamMetadata":
         if indices.dtype == torch.bool:
@@ -604,15 +613,21 @@ class StreamMetadata(LazyInit):
             StreamMetadata: The concatenated StreamMetadata object.
         """
 
+        if not all(isinstance(s, StreamMetadata) for s in metas):
+            raise TypeError("All objects in list must be of type StreamMetadata.")
+
         if len(metas) == 1:
             return deepcopy(metas[0])
 
-        assert all(isinstance(s, StreamMetadata) for s in metas)
         ids = list(itertools.chain.from_iterable([s.ids for s in metas]))
         sos = torch.cat([s.sos for s in metas], dim=0)
         eos = torch.cat([s.eos for s in metas], dim=0)
         lengths = torch.cat([s.lengths for s in metas], dim=0)
-        return cls(ids, sos, eos, lengths)
+        if all(s.chunk_indices is not None for s in metas):
+            chunk_indices = torch.cat([s.chunk_indices for s in metas], dim=0)
+        else:
+            chunk_indices = None
+        return cls(ids, sos, eos, lengths, chunk_indices)
 
     @classmethod
     def cat_length(cls, metas: List["StreamMetadata"]) -> "StreamMetadata":
@@ -640,7 +655,9 @@ class StreamMetadata(LazyInit):
         sos = metas[0].sos.clone()
         eos = metas[-1].eos.clone()
         lengths = sum([s.lengths for s in metas])
-        return cls(ids, sos, eos, lengths)
+        if all(s.chunk_indices is not None for s in metas):
+            chunk_indices = metas[-1].chunk_indices.clone()  # TODO (JDH): This assumes the right-most chunk is the last
+        return cls(ids, sos, eos, lengths, chunk_indices)
 
     def split(self, split_size_or_sections: Union[int, List[int]], dim: str) -> List["StreamMetadata"]:
         """Split a StreamMetadata object into a list of StreamMetadata objects along a given dimension."""
@@ -669,10 +686,13 @@ class StreamMetadata(LazyInit):
             slices = np.cumsum([0] + split_size_or_sections)
             split_ids = [self.ids[i:j] for i, j in zip(slices[:-1], slices[1:])]
 
-        split_first = self.sos.split(split_size_or_sections)
-        split_last = self.eos.split(split_size_or_sections)
+        split_sos = self.sos.split(split_size_or_sections)
+        split_eos = self.eos.split(split_size_or_sections)
         split_lengths = self.lengths.split(split_size_or_sections)
-        args_iter = zip(split_ids, split_first, split_last, split_lengths)
+        split_chunk_indices = (
+            self.chunk_indices.split(split_size_or_sections) if self.chunk_indices is not None else None
+        )
+        args_iter = zip(split_ids, split_sos, split_eos, split_lengths, split_chunk_indices)
 
         return [stream_metadata(*args) for args in args_iter]
 
