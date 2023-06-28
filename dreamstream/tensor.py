@@ -32,6 +32,68 @@ from dreamstream import warnings
 # they are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the graph.
 
 
+class LazyProxy(object):
+    """A proxy class that lazily instantiates an object of type cls with arguments *args and **kwargs."""
+
+    def __init__(self, cls, *args, **kwargs):
+        self.__dict__["_cls"] = cls
+        self.__dict__["_args"] = args
+        self.__dict__["_kwargs"] = kwargs
+        self.__dict__["_obj"] = None
+
+    def __getattr__(self, name):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return getattr(self.__dict__["_obj"], name)
+
+    def __setattr__(self, name, value):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        setattr(self.__dict__["_obj"], name, value)
+
+    def __getitem__(self, key):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__getitem__(key)
+
+    def __copy__(self):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__copy__()
+
+    def __eq__(self, other):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__eq__(other)
+
+    def __len__(self):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__len__()
+
+    def __repr__(self):
+        if self.__dict__["_obj"] is None:
+            return f"LazyProxy({self.__dict__['_cls'].__name__}, {self.__dict__['_args']}, {self.__dict__['_kwargs']})"
+        return self.__dict__["_obj"].__repr__()
+
+    def __init_obj(self):
+        self.__dict__["_obj"] = object.__new__(self.__dict__["_cls"])
+        self.__dict__["_obj"].__init__(*self.__dict__["_args"], **self.__dict__["_kwargs"])
+
+
+class LazyInit(object):
+    """A class that lazily initializes its attributes."""
+
+    def __new__(cls, *args, **kwargs):
+        return LazyProxy(cls, *args, **kwargs)
+
+
 class StreamMetadata:
     """Metadata associated with a batch of streamed input tensors."""
 
