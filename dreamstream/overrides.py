@@ -1,6 +1,6 @@
 import functools
 from copy import deepcopy
-from typing import Any, Callable, NamedTuple, Optional, List, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, NamedTuple, Optional, List, Sequence, Tuple, Union
 from torch.types import Number
 
 import numpy as np
@@ -107,13 +107,13 @@ def stack(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
         names = names[:dim] + (None,) + names[dim:]
         return StreamTensor(tensor.rename_(*names), metas[0])
 
-    # If not all StreamTensors have the same metas, then we can only stack them if 
+    # If not all StreamTensors have the same metas, then we can only stack them if
     # 1, They all have exactly one id
     # 2. All StreamTensors have different ids.
     # 3. All tensors are StreamTensors.
     if not all(isinstance(t, StreamTensor) for t in tensors):
         raise ValueError("Cannot stack StreamTensors with different stream states together with torch.Tensors.")
-    
+
     if not all(len(t.meta.ids) == 1 for t in tensors):
         raise ValueError("Can only stack StreamTensors with different ids together when they each have one id.")
 
@@ -192,7 +192,6 @@ def unbind(tensor: StreamTensor, dim=0) -> List[StreamTensor]:
     if tensor.names[dim] == BATCH:
         states = meta.unbind_batch()
         tensors = tensor.unbind(dim=dim)
-        assert len(tensors) == len(states)
         tensors = [StreamTensor(t, meta) for t, meta in zip(tensors, states)]
     else:
         tensors = tensor.unbind(dim=dim)
@@ -761,9 +760,9 @@ def index_select(input: StreamTensor, dim: int, index: Tensor, *, out: Optional[
     tensor, meta, names = input.decouple()
     out = torch.index_select(tensor, dim, index, out=out)
 
-    if dim == names.index(BATCH):
+    if BATCH in names and dim == names.index(BATCH):
         meta = meta[index]
-    elif dim == names.index(LENGTH):
+    elif LENGTH in names and dim == names.index(LENGTH):
         meta = meta[:, index]
 
     out.rename_(*names)
@@ -967,14 +966,114 @@ def unqsqueeze(input: StreamTensor, dim: int) -> StreamTensor:
 # X @implements(torch.permute)
 
 
-
-# @implements(torch.Tensor.__getstate__)
-# def __getstate__(self):
-#     return self.metadata
-
-
 @implements(torch.Tensor.__reduce_ex__)
 def __reduce_ex__(self: StreamTensor, proto):
     print("OHI!")
     self.rename_(None)
     return torch.Tensor.__reduce_ex__(self, proto)
+
+
+@implements(torch._VF._pack_padded_sequence)
+def _pack_padded_sequence(
+    input: StreamTensor,
+    lengths: Tensor,
+    batch_first: bool = False,
+) -> torch.nn.utils.rnn.PackedSequence:
+    """Decouple the StreamTensor input and remove the batch dimension before calling the original function."""
+    tensor, meta, names = input.decouple()
+    data, batch_sizes = torch._VF._pack_padded_sequence(tensor, lengths, batch_first=batch_first)
+    names = names[1:] if batch_first else names[0] + names[2:]
+    data = StreamTensor(data, meta)
+    data.rename_(*names)
+    return data, batch_sizes
+
+
+@implements(torch._VF._pad_packed_sequence)
+def _pad_packed_sequence(
+    input_data: StreamTensor,
+    batch_sizes: torch.Tensor,
+    batch_first: bool = False,
+    padding_value: float = 0.0,
+    total_length: Optional[int] = None,
+) -> Tuple[StreamTensor, Tensor]:
+    """Decouple the StreamTensor input before calling the original function then add back batch dimension and names."""
+    # import IPython
+    # IPython.embed(using=False, header="pad_packed_sequence")
+    tensor, meta, names = input_data.decouple()
+    tensor, lengths = torch._VF._pad_packed_sequence(tensor, batch_sizes, batch_first, padding_value, total_length)
+    if BATCH in names:
+        names = (None,) + names if batch_first else names[0] + (None,) + names[1:]
+    else:
+        names = (BATCH,) + names if batch_first else names[0] + (BATCH,) + names[1:]
+    tensor.rename_(*names)
+    return StreamTensor(tensor, meta), lengths
+
+
+@implements(torch._VF.rnn_tanh)
+def rnn_tanh(
+    input: StreamTensor,
+    batch_sizes: Optional[torch.Tensor],
+    hx: torch.Tensor,
+    weights: torch.Tensor,
+    bias: torch.Tensor,
+    num_layers: int,
+    dropout: float,
+    training: bool,
+    bidirectional: bool,
+) -> Tuple[StreamTensor, torch.Tensor]:
+    return rnn(input, batch_sizes, hx, weights, bias, num_layers, dropout, training, bidirectional, torch._VF.rnn_tanh)
+
+
+@implements(torch._VF.rnn_relu)
+def rnn_relu(
+    input: StreamTensor,
+    batch_sizes: Optional[torch.Tensor],
+    hx: torch.Tensor,
+    weights: torch.Tensor,
+    bias: torch.Tensor,
+    num_layers: int,
+    dropout: float,
+    training: bool,
+    bidirectional: bool,
+) -> Tuple[StreamTensor, torch.Tensor]:
+    return rnn(input, batch_sizes, hx, weights, bias, num_layers, dropout, training, bidirectional, torch._VF.rnn_relu)
+
+# if batch_sizes is None:
+#     if self.mode == 'RNN_TANH':
+#         result = _VF.rnn_tanh(input, hx, self._flat_weights, self.bias, self.num_layers,
+#                                 self.dropout, self.training, self.bidirectional,
+#                                 self.batch_first)
+#     else:
+#         result = _VF.rnn_relu(input, hx, self._flat_weights, self.bias, self.num_layers,
+#                                 self.dropout, self.training, self.bidirectional,
+#                                 self.batch_first)
+# else:
+#     if self.mode == 'RNN_TANH':
+#         result = _VF.rnn_tanh(input, batch_sizes, hx, self._flat_weights, self.bias,
+#                                 self.num_layers, self.dropout, self.training,
+#                                 self.bidirectional)
+#     else:
+#         result = _VF.rnn_relu(input, batch_sizes, hx, self._flat_weights, self.bias,
+#                                 self.num_layers, self.dropout, self.training,
+#                                 self.bidirectional)
+
+def rnn(
+    input: StreamTensor,
+    batch_sizes: Optional[torch.Tensor],
+    hx: torch.Tensor,
+    weights: torch.Tensor,
+    bias: torch.Tensor,
+    num_layers: int,
+    dropout: float,
+    training: bool,
+    bidirectional: bool,
+    method: Union[torch._VF.rnn_tanh, torch._VF.rnn_relu],
+) -> Tuple[StreamTensor, StreamTensor]:
+    input, meta, names = input.decouple()
+    if isinstance(hx, StreamTensor):
+        hx, hx_meta, hx_names = hx.decouple()
+
+    output, hx = method(input, batch_sizes, hx, weights, bias, num_layers, dropout, training, bidirectional)
+
+    output = StreamTensor(output, meta).rename_(*names)
+    return output, hx
