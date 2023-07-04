@@ -1342,3 +1342,25 @@ class TestSqueeze:
             torch.squeeze,
             **stream_meta_kwargs_fixture,
         )
+
+
+class TestUnbind:
+    def test_unbind_batch(self, stream_tensor_bfl_fixture):
+        batch_size = stream_tensor_bfl_fixture.size(0)
+        tensors = stream_tensor_bfl_fixture.unbind(dim=0)
+        assert len(tensors) == batch_size
+        for i in range(batch_size):
+            assert stream_tensor_bfl_fixture.meta.ids[i] == tensors[i].meta.ids[0]
+            assert stream_tensor_bfl_fixture.meta.sos[i] == tensors[i].meta.sos[0]
+            assert stream_tensor_bfl_fixture.meta.eos[i] == tensors[i].meta.eos[0]
+            assert stream_tensor_bfl_fixture.meta.lengths[i] == tensors[i].meta.lengths[0]
+
+    def test_unbind_feature(self, stream_tensor_bfl_fixture):
+        tensors = stream_tensor_bfl_fixture.unbind(dim=1)
+        for tensor in tensors:
+            assert tensor.meta == stream_tensor_bfl_fixture.meta
+
+    def test_unbind_length(self, stream_tensor_bfl_fixture):
+        # TODO (JDH): Implement this.
+        with pytest.raises(ValueError):
+            stream_tensor_bfl_fixture.unbind(dim=2)
