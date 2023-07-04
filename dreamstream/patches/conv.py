@@ -1,3 +1,5 @@
+from typing import Tuple, Dict
+
 import torch
 
 from dreamstream.tensor import StreamTensor
@@ -10,7 +12,7 @@ from dreamstream.nn.utils import pad_stream_tensor
 # TODO (LB): Add support for transposed convolutions.
 
 
-def conv_1d_pre_hook(self, inputs):
+def conv_1d_pre_hook(self, inputs: Tuple[torch.Tensor]) -> Tuple[torch.Tensor]:
     is_stream_tensor = isinstance(inputs[0], StreamTensor)
     if not self.streaming:
         if is_stream_tensor:
@@ -42,7 +44,7 @@ def conv_1d_pre_hook(self, inputs):
     return input
 
 
-def conv_1d_post_hook(self, inputs, outputs):
+def conv_1d_post_hook(self, inputs: Tuple[torch.Tensor], outputs: torch.Tensor):
     if not self.streaming:
         return outputs
 
@@ -60,10 +62,10 @@ def patch_conv_1d(module) -> torch.nn.Module:
     add_streaming_modes(module)
 
     # Add a dictionary for storing input buffers.
-    module.stream_buffer = {}
+    module.stream_buffer: Dict[str, torch.Tensor] = {}
 
     # Add module-specific attributes.
-    module.kernel_width = module.kernel_size[0] + (module.kernel_size[0] - 1) * (module.dilation[0] - 1)
+    module.kernel_width: int = module.kernel_size[0] + (module.kernel_size[0] - 1) * (module.dilation[0] - 1)
 
     # Register pre_hook and post_hook.
     module.register_forward_pre_hook(conv_1d_pre_hook)
