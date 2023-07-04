@@ -1,15 +1,21 @@
 import itertools
-import warnings
 
 from copy import deepcopy
-from typing import Any, Callable, List, Optional, Tuple, Union, Mapping, Sequence
+from typing import Any, Callable, List, Optional, Tuple, Union, Mapping, Sequence, Dict
 
 import torch
 import numpy as np
 
 from torch import Tensor
 
-from dreamstream.func_coverage import DECOUPLE_FUNCTIONS, RECOUPLE_FUNCTIONS, VALID_FUNCTIONS, OVERRIDDEN_FUNCTIONS
+from dreamstream.func_coverage import (
+    DECOUPLE_FUNCTIONS,
+    RECOUPLE_FUNCTIONS,
+    VALID_FUNCTIONS,
+    CUSTOMIZED_FUNCTIONS,
+    DEFAULT_VALID_FUNCTIONS,
+    INPLACE_RECOUPLE_FUNCTIONS,
+)
 from dreamstream.utils.flags import BATCH, LENGTH
 from dreamstream.utils.numba import (
     is_sorted_ascending,
@@ -19,46 +25,73 @@ from dreamstream.utils.numba import (
     update_eos_from_slice,
     update_lengths_from_list_of_indices,
 )
+from dreamstream import warnings
 
 
 # TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when
 # they are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the graph.
 
 
-def decouple_recursive(x, metas: Optional[List["StreamMetadata"]] = None, names: Optional[List[str]] = None):
-    """Recurse a nested structure and decouple all StreamTensors."""
-    if isinstance(x, StreamTensor):
-        if metas is None and names is None:
-            return x.tensor()
+class LazyProxy(object):
+    """A proxy class that lazily instantiates an object of type cls with arguments *args and **kwargs."""
 
-        tensor, meta, name = x.decouple()
-        metas.append(meta)
-        names.append(name)
-        return tensor
+    def __init__(self, cls, *args, **kwargs):
+        self.__dict__["_cls"] = cls
+        self.__dict__["_args"] = args
+        self.__dict__["_kwargs"] = kwargs
+        self.__dict__["_obj"] = None
 
-    elif isinstance(x, Mapping):
-        return type(x)((k, decouple_recursive(v, metas=metas, names=names)) for k, v in x.items())
-    elif isinstance(x, Sequence):
-        return type(x)(decouple_recursive(v, metas=metas, names=names) for v in x)
+    def __getattr__(self, name):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
 
-    return x
+        return getattr(self.__dict__["_obj"], name)
+
+    def __setattr__(self, name, value):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        setattr(self.__dict__["_obj"], name, value)
+
+    def __getitem__(self, key):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__getitem__(key)
+
+    def __copy__(self):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__copy__()
+
+    def __eq__(self, other):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__eq__(other)
+
+    def __len__(self):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__len__()
+
+    def __repr__(self):
+        if self.__dict__["_obj"] is None:
+            return f"LazyProxy({self.__dict__['_cls'].__name__}, {self.__dict__['_args']}, {self.__dict__['_kwargs']})"
+        return self.__dict__["_obj"].__repr__()
+
+    def __init_obj(self):
+        self.__dict__["_obj"] = object.__new__(self.__dict__["_cls"])
+        self.__dict__["_obj"].__init__(*self.__dict__["_args"], **self.__dict__["_kwargs"])
 
 
-def decouple(func, *args, **kwargs):
-    """Call function on tensor after decoupling it from StreamMetadata."""
-    args, kwargs = decouple_recursive((args, kwargs))
-    return func(*args, **kwargs)
+class LazyInit(object):
+    """A class that lazily initializes its attributes."""
 
-
-def recouple(func, *args, **kwargs):
-    """Call function on tensor after recoupling it to StreamMetadata and recouple again afterwards."""
-    metas, names = [], []
-    args, kwargs = decouple_recursive((args, kwargs), metas=metas, names=names)
-    if not all(metas[0] == m for m in metas):
-        raise ValueError("All StreamTensors must have the same StreamMetadata.")
-
-    tensor = func(*args, **kwargs)
-    return as_stream_tensor(data=tensor, meta=metas[0], names=names[0])
+    def __new__(cls, *args, **kwargs):
+        return LazyProxy(cls, *args, **kwargs)
 
 
 class StreamMetadata:
@@ -70,6 +103,9 @@ class StreamMetadata:
         "_eos",
         "_lengths",
         "_chunk_indices",
+        "_temp_buffer",
+        "_temp_names",
+        "_temp_input_was_packed",
         "_min_length",
         "_max_length",
         "_lengths_updated",
@@ -84,45 +120,60 @@ class StreamMetadata:
 
     def __init__(
         self,
-        ids: Union[str, List[str]],
-        sos: Union[bool, List[bool], torch.BoolTensor],
-        eos: Union[bool, List[bool], torch.BoolTensor],
-        lengths: Union[int, List[int], torch.IntTensor],
-        chunk_indices: Optional[Union[int, List[int], torch.IntTensor]] = None,
+        ids: Union[str, Tuple[str]],
+        sos: Union[bool, Tuple[bool], torch.BoolTensor],
+        eos: Union[bool, Tuple[bool], torch.BoolTensor],
+        lengths: Union[int, Tuple[int], torch.IntTensor],
+        chunk_indices: Optional[Union[int, Tuple[int], torch.IntTensor]] = None,
+        _copy_on_init: bool = False,
     ):
-        # TODO: Make initialization lazy such that it only happens when the StreamMetadata is actually used.
+        super().__init__()
+
         if isinstance(ids, str):
-            ids = [ids]
+            ids = (ids,)
+        elif isinstance(ids, Sequence):
+            ids = tuple(ids)
         if isinstance(lengths, int):
-            lengths = [lengths]
+            lengths = tuple(lengths)
         if isinstance(sos, bool):
-            sos = [sos]
+            sos = tuple(sos)
         if isinstance(eos, bool):
-            eos = [eos]
+            eos = tuple(eos)
 
         if not len(ids) == len(lengths) == len(sos) == len(eos):
             raise ValueError("ids, lengths, sos and eos must have the same length.")
 
-        sos = torch.as_tensor(sos, dtype=torch.bool)
-        eos = torch.as_tensor(eos, dtype=torch.bool)
-        lengths = torch.as_tensor(lengths, dtype=torch.int)
+        sos_tensor = torch.as_tensor(sos, dtype=torch.bool)
+        eos_tensor = torch.as_tensor(eos, dtype=torch.bool)
+        lengths_tensor = torch.as_tensor(lengths, dtype=torch.int)
+
+        if _copy_on_init:
+            if sos_tensor is sos:
+                sos_tensor = sos_tensor.clone()
+            if eos_tensor is eos:
+                eos_tensor = eos_tensor.clone()
+            if lengths_tensor is lengths:
+                lengths_tensor = lengths_tensor.clone()
 
         if not all(isinstance(i, str) for i in ids):
             raise ValueError("ids must be a list of strings.")
 
-        if sos.ndim > 1 or eos.ndim > 1 or lengths.ndim > 1:
+        if lengths_tensor.ndim > 1 or eos_tensor.ndim > 1 or lengths_tensor.ndim > 1:
             raise ValueError("sos, eos and lengths must be 1-dimensional.")
 
         self.ids = ids
-        self._sos = sos
-        self._eos = eos
-        self._lengths = lengths
+        self._sos = sos_tensor
+        self._eos = eos_tensor
+        self._lengths = lengths_tensor
         self._chunk_indices = chunk_indices
+
+        self._temp_buffer = None
+        self._temp_names = None
+        self._temp_input_was_packed = None
 
         self._min_length = None
         self._max_length = None
         self._lengths_updated = True
-        self._update_lengths()
 
         self._any_starting = None
         self._any_ending = None
@@ -131,7 +182,6 @@ class StreamMetadata:
         self._any_starting_or_ending = None
         self._all_starting_and_ending = None
         self._sos_or_eos_updated = True
-        self._update_logicals()
 
     @property
     def sos(self) -> torch.BoolTensor:
@@ -263,13 +313,15 @@ class StreamMetadata:
         new_meta.__dict__.update(self.__dict__)
         return new_meta
 
-    def __deepcopy__(self):
+    def __deepcopy__(self, memo: Optional[dict] = None):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
-            ids=deepcopy(self.ids),
-            sos=self.sos.clone(),
-            eos=self.eos.clone(),
-            lengths=self.lengths.clone(),
+            ids=self.ids,
+            sos=self.sos,
+            eos=self.eos,
+            lengths=self.lengths,
+            chunk_indices=self._chunk_indices,
+            _copy_on_init=True,
         )
 
     def __eq__(self, other: "StreamMetadata") -> bool:
@@ -279,6 +331,10 @@ class StreamMetadata:
             and self.sos.equal(other.sos)
             and self.eos.equal(other.eos)
             and self.lengths.equal(other.lengths)
+            and (
+                (self._chunk_indices is None and other._chunk_indices is None)
+                or self._chunk_indices.equal(other.lengths)
+            )
         )
 
     def __len__(self) -> int:
@@ -309,7 +365,6 @@ class StreamMetadata:
                 i += 1
 
             short_ids_repr = ", ".join(repr_ids) + ", ..., " + repr(last)
-            print(short_ids_repr, len(short_ids_repr))
         else:
             short_ids_repr = repr(self.ids)
 
@@ -366,28 +421,31 @@ class StreamMetadata:
             raise IndexError(f"Expected batch indices to be a 1-dimensional tensor, but got {indices.ndim} dimensions.")
 
         if isinstance(indices, torch.BoolTensor):
-            ids = [id for i, id in enumerate(self.ids) if indices[i]]
+            ids = tuple(id for i, id in enumerate(self.ids) if indices[i])
             sos = self.sos[indices]
             eos = self.eos[indices]
             lengths = self.lengths[indices]
-            return StreamMetadata(ids, sos, eos, lengths)
+            chunk_indices = self._chunk_indices[indices] if self._chunk_indices is not None else None
+            return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
         if isinstance(indices, int):
-            ids = [self.ids[indices]]
-            sos = self.sos[[indices]]
-            eos = self.eos[[indices]]
-            lengths = self.lengths[[indices]]
-            return StreamMetadata(ids, sos, eos, lengths)
+            ids = (self.ids[indices],)
+            sos = self.sos[indices].unsqueeze_(0)
+            eos = self.eos[indices].unsqueeze_(0)
+            lengths = self.lengths[indices].unsqueeze_(0)
+            chunk_indices = self._chunk_indices[indices].unsqueeze_(0) if self._chunk_indices is not None else None
+            return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
         if isinstance(indices, slice):
             ids = self.ids[indices]
         else:  # List[int], Tuple[int, ...], torch.IntTensor
-            ids = [self.ids[i] for i in indices]
+            ids = tuple(self.ids[i] for i in indices)
 
         sos = self.sos[indices]
         eos = self.eos[indices]
         lengths = self.lengths[indices]
-        return StreamMetadata(ids, sos, eos, lengths)
+        chunk_indices = self._chunk_indices[indices] if self._chunk_indices is not None else None
+        return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
     def index_length(
         self, indices: Union[None, int, slice, List[int], Tuple[int], torch.IntTensor, torch.BoolTensor]
@@ -426,16 +484,18 @@ class StreamMetadata:
             return self.__deepcopy__()
 
         if not keep_ids.all():
-            ids = [id for i, id in enumerate(self.ids) if keep_ids[i]]
+            ids = tuple(id for i, id in enumerate(self.ids) if keep_ids[i])
             sos = self.sos[keep_ids]
             eos = self.eos[keep_ids]
             lengths = self.lengths[keep_ids]
+            chunk_indices = self._chunk_indices[keep_ids] if self._chunk_indices is not None else None
             indices = indices[keep_ids]
         else:  # includes `broadcast_batch == True`
             ids = deepcopy(self.ids)
             sos = self.sos
             eos = self.eos
             lengths = self.lengths
+            chunk_indices = self._chunk_indices
 
         sos = sos & indices[:, 0]  # SOS only if the first index is included.
         if not broadcast_length:
@@ -445,8 +505,9 @@ class StreamMetadata:
             eos = eos & (start < lengths) & (lengths <= stop)
             # eos = eos & indices[range(indices.size(0)), lengths - 1]  # EOS only if the last non-padding is included.
             lengths = cumsum[keep_ids, lengths - 1]
+            chunk_indices = chunk_indices[keep_ids] if chunk_indices is not None else None
 
-        return StreamMetadata(ids, sos, eos, lengths)
+        return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
     def _index_length_int(self, index: int) -> "StreamMetadata":
         # Convert negative indices to positive
@@ -459,7 +520,8 @@ class StreamMetadata:
         # TODO (JDH): numba compiled arithmetic is much faster but slowed down due to conversion to/from numpy
         #   Maybe we should store sos and eos as numpy arrays instead of torch tensors?
         eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), self.lengths.numpy(), index))
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_slice(self, slice: slice) -> "StreamMetadata":
         # Convert start and stop to positive indices
@@ -480,7 +542,8 @@ class StreamMetadata:
 
         sos = self.sos.clone() if start == 0 and stop > 0 else torch.zeros_like(self.sos)
         eos = torch.from_numpy(update_eos_from_slice(self.eos.numpy(), self.lengths.numpy(), start, stop))
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_list(self, indices: Union[List[int], Tuple[int]]) -> "StreamMetadata":
         # Convert to numpy arrays for faster manipulation and numba jit support.
@@ -498,7 +561,8 @@ class StreamMetadata:
         sos = self.sos.clone() if min_i == 0 else torch.zeros_like(self.sos)
         eos = torch.from_numpy(update_eos_from_slice(self.eos.numpy(), lengths_np, min_i, max_i))
         # TODO (JDH): Keep EOS true if the indexing spans over the last non-padding element.
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_1d_tensor(self, indices: torch.Tensor) -> "StreamMetadata":
         if indices.dtype == torch.bool:
@@ -532,15 +596,21 @@ class StreamMetadata:
             StreamMetadata: The concatenated StreamMetadata object.
         """
 
+        if not all(isinstance(s, StreamMetadata) for s in metas):
+            raise TypeError("All objects in list must be of type StreamMetadata.")
+
         if len(metas) == 1:
             return deepcopy(metas[0])
 
-        assert all(isinstance(s, StreamMetadata) for s in metas)
-        ids = list(itertools.chain.from_iterable([s.ids for s in metas]))
+        ids = tuple(itertools.chain.from_iterable(s.ids for s in metas))
         sos = torch.cat([s.sos for s in metas], dim=0)
         eos = torch.cat([s.eos for s in metas], dim=0)
         lengths = torch.cat([s.lengths for s in metas], dim=0)
-        return cls(ids, sos, eos, lengths)
+        if all(s.chunk_indices is not None for s in metas):
+            chunk_indices = torch.cat([s.chunk_indices for s in metas], dim=0)
+        else:
+            chunk_indices = None
+        return cls(ids, sos, eos, lengths, chunk_indices)
 
     @classmethod
     def cat_length(cls, metas: List["StreamMetadata"]) -> "StreamMetadata":
@@ -568,7 +638,11 @@ class StreamMetadata:
         sos = metas[0].sos.clone()
         eos = metas[-1].eos.clone()
         lengths = sum([s.lengths for s in metas])
-        return cls(ids, sos, eos, lengths)
+        if all(s.chunk_indices is not None for s in metas):
+            chunk_indices = metas[-1].chunk_indices.clone()  # TODO (JDH): This assumes the right-most chunk is the last
+        else:
+            chunk_indices = None
+        return cls(ids, sos, eos, lengths, chunk_indices)
 
     def split(self, split_size_or_sections: Union[int, List[int]], dim: str) -> List["StreamMetadata"]:
         """Split a StreamMetadata object into a list of StreamMetadata objects along a given dimension."""
@@ -592,17 +666,21 @@ class StreamMetadata:
 
         if isinstance(split_size_or_sections, int):
             start = range(0, len(self), split_size_or_sections)
-            split_ids = [self.ids[i : i + split_size_or_sections] for i in start]
+            split_ids = tuple(self.ids[i : i + split_size_or_sections] for i in start)
         else:
             slices = np.cumsum([0] + split_size_or_sections)
-            split_ids = [self.ids[i:j] for i, j in zip(slices[:-1], slices[1:])]
+            split_ids = tuple(self.ids[i:j] for i, j in zip(slices[:-1], slices[1:]))
 
-        split_first = self.sos.split(split_size_or_sections)
-        split_last = self.eos.split(split_size_or_sections)
+        split_sos = self.sos.split(split_size_or_sections)
+        split_eos = self.eos.split(split_size_or_sections)
         split_lengths = self.lengths.split(split_size_or_sections)
-        args_iter = zip(split_ids, split_first, split_last, split_lengths)
+        if self.chunk_indices is not None:
+            split_chunk_indices = self.chunk_indices.split(split_size_or_sections)
+        else:
+            split_chunk_indices = [None] * len(split_ids)
 
-        return [stream_metadata(*args) for args in args_iter]
+        args_iter = zip(split_ids, split_sos, split_eos, split_lengths, split_chunk_indices)
+        return [StreamMetadata(*args) for args in args_iter]
 
     def split_length(self, split_size_or_sections: Union[int, List[int]]) -> List["StreamMetadata"]:
         """Split a StreamMetadata object into a list of StreamMetadata objects along the length dimension.
@@ -654,19 +732,19 @@ class MultiLengthStreamMetadata:
 
 
 def stream_metadata(
-    ids: Union[str, List[str]],
-    sos: Union[bool, List[bool], torch.BoolTensor],
-    eos: Union[bool, List[bool], torch.BoolTensor],
-    lengths: Union[int, List[int], torch.IntTensor],
-    chunk_indices: Optional[Union[int, List[int], torch.IntTensor]] = None,
+    ids: Union[str, Tuple[str]],
+    sos: Union[bool, Tuple[bool], torch.BoolTensor],
+    eos: Union[bool, Tuple[bool], torch.BoolTensor],
+    lengths: Union[int, Tuple[int], torch.IntTensor],
+    chunk_indices: Optional[Union[int, Tuple[int], torch.IntTensor]] = None,
 ) -> StreamMetadata:
     """Create a StreamMetadata object from the given arguments.
 
     Args:
-        ids (Union[str, List[str]]): The ids of the input tensors.
+        ids (Union[str, Tuple[str]]): The ids of the input tensors.
         sos (bool): Whether the input tensors are the first in a batch.
         eos (bool): Whether the input tensors are the last in a batch.
-        lengths (Union[int, List[int]]): The lengths of the input tensors.
+        lengths (Union[int, Tuple[int]]): The lengths of the input tensors.
         chunk_indices (int): The index of the chunk in the batch.
         num_chunks (Optional[int], optional): The number of chunks in the batch. Defaults to None.
 
@@ -688,12 +766,10 @@ class StreamTensor(torch.Tensor):
         """Return a new StreamTensor object."""
         return super().__new__(cls, data, *args, **kwargs)
 
-    def __init__(self, data, meta: StreamMetadata, *args, names: List[str] = None, **kwargs):
+    def __init__(self, data, meta: StreamMetadata, *args, **kwargs):
         """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
         super().__init__()
         self.meta = meta
-        if names is not None:
-            self.rename_(*names)
 
     def __getstate__(self) -> Tuple[torch.Tensor, StreamMetadata, List[str]]:
         """Return the state of the StreamTensor object."""
@@ -718,44 +794,64 @@ class StreamTensor(torch.Tensor):
         """
         if kwargs is None:
             kwargs = dict()
+            
+        if func in VALID_FUNCTIONS:
+            return super().__torch_function__(func, types, args, {})
 
-        if func in OVERRIDDEN_FUNCTIONS:
-            # print(f"\n\n{func.__name__}: STREAM_TENSOR_FUNCTIONS\n\n")
-            return OVERRIDDEN_FUNCTIONS[func](*args, **kwargs)
-
-        if func in RECOUPLE_FUNCTIONS:
-            # print(f"\n\n{func.__name__}: RECOUPLE_FUNCTIONS\n\n")
-            return recouple(func, *args, **kwargs)
+        if func in CUSTOMIZED_FUNCTIONS:
+            return CUSTOMIZED_FUNCTIONS[func](*args, **kwargs)
 
         if func in DECOUPLE_FUNCTIONS:
-            # print(f"\n\n{func.__name__}: DECOUPLE_FUNCTIONS\n\n")
             return decouple(func, *args, **kwargs)
 
-        if func in VALID_FUNCTIONS:
-            # print(f"\n\n{func.__name__}: VALID_FUNCTIONS\n\n")
-            return super().__torch_function__(func, types, args, kwargs)
+        if func in RECOUPLE_FUNCTIONS:
+            return recouple(func, *args, **kwargs)
+
+        if func in INPLACE_RECOUPLE_FUNCTIONS:
+            return inplace_recouple(func, *args, **kwargs)
 
         # Unhandled functions are passed to the torch.Tensor.__torch_function__ method.
-        warnings.warn(
-            f"Function `{func.__name__}` is not handled by `StreamTensor.__torch_function__` "
-            "and may not work as expected."
-        )
+        if func not in DEFAULT_VALID_FUNCTIONS:
+            warnings.warn(
+                f"Function {func.__name__} is not handled by StreamTensor.__torch_function__ "
+                f"and may not work as expected."
+            )
+
+        return cls.default_valid(func, types, args, kwargs)
+
+    @classmethod
+    def default_valid(cls, func, types, args, kwargs):
         out = super().__torch_function__(func, types, args, kwargs)
 
-        metas = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]
+        metas = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]  # TODO (JDH): Make recursive
         if not all(s == metas[0] for s in metas[1:]):
             msg = (
                 f"Called a torch function ({func.__name__}) which was not handled by "
-                f"StreamTensor.__torch_function__ with {len(metas)} StreamTensors in the input."
+                f"StreamTensor.__torch_function__ with {len(metas)} StreamTensors in the input. "
                 f"In this case the function can only be handled if the StreamTensors have equal metadata,"
                 f"but they were not equal."
             )
             raise RuntimeError(msg)
 
-        if isinstance(out, torch.Tensor):
+        if isinstance(out, StreamTensor):
+            out.meta = metas[0]
+            return out
+        elif isinstance(out, torch.Tensor):
             return StreamTensor(out, meta=metas[0])
 
         return out
+
+    @property
+    def real(self):
+        return torch.real(self)
+
+    @property
+    def imag(self):
+        return torch.imag(self)
+
+    @property
+    def T(self):
+        return self.permute(*reversed(range(self.ndim)))
 
     @property
     def has_batch_dim(self) -> bool:
@@ -802,10 +898,8 @@ class StreamTensor(torch.Tensor):
             return None
         if len(self.meta) == 1 and self.meta.max_length > 0:
             return self
-        tensor, meta, names = self.decouple()
-        batch_dim = names.index(BATCH)
-        tensor = torch.index_select(tensor, batch_dim, meta.lengths.nonzero().squeeze())
-        return as_stream_tensor(data=tensor, meta=meta.drop_empty(), names=names)
+
+        return torch.index_select(self, self.batch_dim, self.meta.lengths.nonzero().squeeze())
 
     def named_tensor(self) -> torch.Tensor:
         """Return the underlying torch.Tensor with names."""
@@ -819,40 +913,150 @@ class StreamTensor(torch.Tensor):
             length_dim -= 1
         return [x.narrow(length_dim, 0, x.meta.lengths.item()) for x in self.unbind(dim=batch_dim)]
 
-    def decouple(self, copy_meta: bool = False) -> Tuple[Tensor, StreamMetadata, Tuple[str]]:
+    def decouple(self, copy_meta: bool = False, keep_names: bool = False) -> Tuple[Tensor, StreamMetadata, Tuple[str]]:
         """Decouple the StreamTensor from names and metadata."""
         meta = self.meta.clone() if copy_meta else self.meta
-        return self.tensor(), meta, self.names
+        return self.tensor(keep_names=keep_names), meta, self.names
 
 
 def as_stream_tensor(
     data,
-    meta: StreamMetadata,
-    names: Tuple[Union[None, int]] = None,
+    meta: StreamMetadata = None,
+    names: Tuple[Union[None, str]] = None,
     dtype: torch.dtype = None,
     device: torch.device = None,
 ) -> StreamTensor:
     """Convert a tensor to a StreamTensor. See also `torch.as_tensor`."""
     data = torch.as_tensor(data, dtype=dtype, device=device)
-    if names:
+    if names is not None:
         data = data.refine_names(*names)  # Make the tensor named if it isn't already.
+    if meta is None:
+        meta = data.meta  # If meta is not given, assume it is already on the input data.
     return StreamTensor(data=data, meta=meta)
 
 
 def stream_tensor(
     data,
     meta: StreamMetadata,
-    names: Tuple[Union[None, int]],
+    names: Tuple[Union[None, str]],
     dtype: torch.dtype = None,
     device: torch.device = None,
     requires_grad: bool = False,
     pin_memory: bool = False,
 ) -> StreamTensor:
     """Convert a tensor to a StreamTensor. See also `torch.tensor`."""
-    if isinstance(data, torch.Tensor) and data.names != names:
-        data = data.rename(*names)
+    try:
+        data = torch.tensor(
+            data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory
+        )
+    except RuntimeError:
+        data = torch.tensor(data, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory)
+        data.rename_(*names)
 
-    data = torch.tensor(
-        data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory
-    )
     return StreamTensor(data=data, meta=meta)
+
+
+class TestTensor(torch.Tensor):
+    @staticmethod
+    def __new__(cls, data, meta, *args, **kwargs) -> "TestTensor":
+        """Return a new StreamTensor object."""
+        return super().__new__(cls, data, *args, **kwargs)
+
+    def __init__(self, data, meta, *args, names: List[str] = None, **kwargs):
+        """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
+        super(TestTensor).__init__()
+        self.meta = meta
+
+    def tensor(self, keep_names: bool = False) -> torch.Tensor:
+        """Return the underlying torch.Tensor."""
+        tensor = torch.Tensor(self)  # 1-2 µs
+        if not keep_names:
+            tensor.rename_(None)  # 2-3 µs
+        return tensor
+
+    def clone(self, *args, **kwargs):
+        """Clone a StreamTensor object."""
+        return TestTensor(super().clone(*args, **kwargs), self.meta)
+
+
+def decouple_recursive(x, metas: Optional[List["StreamMetadata"]] = None, names: Optional[List[str]] = None):
+    """Recurse a nested structure and decouple all StreamTensors."""
+    if isinstance(x, StreamTensor):
+        if metas is None and names is None:
+            return x.tensor()
+
+        tensor, meta, name = x.decouple()
+        metas.append(meta)
+        names.append(name)
+        return tensor
+
+    elif isinstance(x, Mapping):
+        return type(x)((k, decouple_recursive(v, metas=metas, names=names)) for k, v in x.items())
+    elif isinstance(x, str):  # Must handle strings before Sequence, because strings are sequences.
+        return x
+    elif isinstance(x, Sequence):
+        return type(x)(decouple_recursive(v, metas=metas, names=names) for v in x)
+
+    return x
+
+
+# TODO (JDH): Use decouple_recursive instead of the two/three for loops below.
+
+# def decouple(func, *args, **kwargs):
+#     """Call function on tensor after decoupling it from StreamMetadata."""
+#     args, kwargs = decouple_recursive((args, kwargs))
+#     return func(*args, **kwargs)
+
+
+# def recouple(func, *args, **kwargs):
+#     """Call function on tensor after recoupling it to StreamMetadata and recouple again afterwards."""
+#     metas, names = [], []
+#     args, kwargs = decouple_recursive((args, kwargs), metas=metas, names=names)
+#     if not all(metas[0] == m for m in metas):
+#         raise ValueError("All StreamTensors must have the same StreamMetadata.")
+
+#     tensor = func(*args, **kwargs)
+#     return as_stream_tensor(data=tensor, meta=metas[0], names=names[0])
+
+
+def decouple(func, *args, _keep_names=False, _tensor_type=StreamTensor, **kwargs):
+    """Call function on tensor after decoupling it from StreamMetadata and names."""
+    args = [arg.tensor(keep_names=_keep_names) if isinstance(arg, _tensor_type) else arg for arg in args]
+    kwargs = {k: v.tensor(keep_names=_keep_names) if isinstance(v, _tensor_type) else v for k, v in kwargs.items()}
+    return func(*args, **kwargs)
+
+
+def recouple(func, *args, _tensor_type=StreamTensor, **kwargs):
+    """Call function on tensor after decoupling it from StreamMetadata and names and recouple again afterwards."""
+    meta_list = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, _tensor_type)]
+    names_list = [x.names for x in [*args, *kwargs.values()] if isinstance(x, _tensor_type)]
+    if not (all(m == meta_list[0] for m in meta_list[1:]) and all(n == names_list[0] for n in names_list[1:])):
+        raise RuntimeError("StreamTensor arguments must have the same metadata and names.")
+    out = decouple(func, *args, _tensor_type=_tensor_type, **kwargs)
+    out = _tensor_type(out, meta_list[0]).rename_(*names_list[0])
+    return out
+
+
+def inplace_recouple(func, tensor, *args, _tensor_type=StreamTensor, **kwargs):
+    """Call an in-place function on tensor after decoupling it from StreamMetadata and names, return the original."""
+    decouple(func, tensor, *args, _tensor_type=_tensor_type, **kwargs)  # Inplace operation by func on tensor.
+    return tensor
+
+
+def decouple_recursive(x, metas: Optional[List["StreamMetadata"]] = None, names: Optional[List[str]] = None):
+    """Recurse a nested structure and decouple all StreamTensors."""
+    if isinstance(x, StreamTensor):
+        if metas is None and names is None:
+            return x.tensor()
+
+        tensor, meta, name = x.decouple()
+        metas.append(meta)
+        names.append(name)
+        return tensor
+
+    elif isinstance(x, Mapping):
+        return type(x)((k, decouple_recursive(v, metas=metas, names=names)) for k, v in x.items())
+    elif isinstance(x, Sequence):
+        return type(x)(decouple_recursive(v, metas=metas, names=names) for v in x)
+
+    return x

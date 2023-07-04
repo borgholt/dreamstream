@@ -5,6 +5,10 @@ class TorchStreamWarning(RuntimeWarning):
     pass
 
 
+def warn(message: str):
+    warnings.warn(message, TorchStreamWarning, stacklevel=2)
+
+
 class TorchStreamFallbackWarning(TorchStreamWarning):
     pass
 
@@ -20,7 +24,7 @@ FALLBACK_WARNING = (
     "open an issue on GitHub."
 )
 
-REASON_METADATA_AMBIGUOUS = "since combining the StreamMetadata of the inputs is ambiguous"
+DESCRIPTION_METADATA_AMBIGUOUS = "since combining the StreamMetadata of the inputs is ambiguous"
 
 
 def fallback_operation_warning(operation: str, description: str = ""):

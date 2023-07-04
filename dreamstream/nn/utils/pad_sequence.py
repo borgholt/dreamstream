@@ -36,14 +36,12 @@ def pad_chunks(
     tensor = tensor.rename(*names)
 
     meta = StreamMetadata(ids=ids, sos=sos, eos=eos, lengths=lengths)
-
     return StreamTensor(data=tensor, meta=meta)
 
 
 def pad_full_sequence(sequences, names: List[str], ids: List[str], batch_first: bool = False) -> StreamTensor:
     sos = torch.full((len(sequences),), True, dtype=torch.bool)
     eos = torch.full((len(sequences),), True, dtype=torch.bool)
-
     return pad_chunks(sequences=sequences, names=names, ids=ids, sos=sos, eos=eos, batch_first=batch_first)
 
 
