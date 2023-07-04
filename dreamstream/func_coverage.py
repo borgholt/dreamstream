@@ -76,7 +76,7 @@ DEFAULT_VALID_FUNCTIONS = {
 }
 DEFAULT_VALID_FUNCTIONS.update(DEFAULT_VALID_POITWISE_OPS)
 
-# Functions that must be wrapped to avoid returning a StreamTensor (and may not ).
+# Functions that must be wrapped to avoid returning a StreamTensor (and may not).
 DECOUPLE_FUNCTIONS = {
     torch.argmax,
     torch.argmin,
