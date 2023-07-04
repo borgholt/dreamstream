@@ -189,6 +189,11 @@ pip install -r requirements.txt
 ```
 
 
+## Run tests
+```bash
+pytest -sv --cov=dreamstream --cov-report=term -p no:pytest_wampy tests/test_tensor.py::TestUnbind
+```
+
 
 ```python
 
