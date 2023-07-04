@@ -1,7 +1,7 @@
 import itertools
 
 from copy import deepcopy
-from typing import Any, Callable, List, Optional, Tuple, Union, Mapping, Sequence
+from typing import Any, Callable, List, Optional, Tuple, Union, Mapping, Sequence, Dict
 
 import torch
 import numpy as np
@@ -105,6 +105,7 @@ class StreamMetadata:
         "_chunk_indices",
         "_temp_buffer",
         "_temp_names",
+        "_temp_input_was_packed",
         "_min_length",
         "_max_length",
         "_lengths_updated",
@@ -168,6 +169,7 @@ class StreamMetadata:
 
         self._temp_buffer = None
         self._temp_names = None
+        self._temp_input_was_packed = None
 
         self._min_length = None
         self._max_length = None
@@ -638,6 +640,8 @@ class StreamMetadata:
         lengths = sum([s.lengths for s in metas])
         if all(s.chunk_indices is not None for s in metas):
             chunk_indices = metas[-1].chunk_indices.clone()  # TODO (JDH): This assumes the right-most chunk is the last
+        else:
+            chunk_indices = None
         return cls(ids, sos, eos, lengths, chunk_indices)
 
     def split(self, split_size_or_sections: Union[int, List[int]], dim: str) -> List["StreamMetadata"]:
@@ -673,7 +677,7 @@ class StreamMetadata:
         if self.chunk_indices is not None:
             split_chunk_indices = self.chunk_indices.split(split_size_or_sections)
         else:
-            split_chunk_indices = [None] * split_size_or_sections
+            split_chunk_indices = [None] * len(split_ids)
 
         args_iter = zip(split_ids, split_sos, split_eos, split_lengths, split_chunk_indices)
         return [StreamMetadata(*args) for args in args_iter]
@@ -790,7 +794,7 @@ class StreamTensor(torch.Tensor):
         """
         if kwargs is None:
             kwargs = dict()
-
+            
         if func in VALID_FUNCTIONS:
             return super().__torch_function__(func, types, args, {})
 
@@ -838,6 +842,18 @@ class StreamTensor(torch.Tensor):
         return out
 
     @property
+    def real(self):
+        return torch.real(self)
+
+    @property
+    def imag(self):
+        return torch.imag(self)
+
+    @property
+    def T(self):
+        return self.permute(*reversed(range(self.ndim)))
+
+    @property
     def has_batch_dim(self) -> bool:
         return BATCH in self.names
 
@@ -852,18 +868,6 @@ class StreamTensor(torch.Tensor):
     @property
     def length_dim(self) -> int:
         return self.names.index(LENGTH)
-
-    @property
-    def real(self):
-        return torch.real(self)
-
-    @property
-    def imag(self):
-        return torch.imag(self)
-
-    @property
-    def T(self):
-        return self.permute(*reversed(range(self.ndim)))
 
     def is_batch_dim(self, dim: int) -> bool:
         return self.names[dim] == BATCH
@@ -1029,8 +1033,8 @@ def recouple(func, *args, _tensor_type=StreamTensor, **kwargs):
     if not (all(m == meta_list[0] for m in meta_list[1:]) and all(n == names_list[0] for n in names_list[1:])):
         raise RuntimeError("StreamTensor arguments must have the same metadata and names.")
     out = decouple(func, *args, _tensor_type=_tensor_type, **kwargs)
-    out.rename_(*names_list[0])
-    return _tensor_type(out, meta_list[0])
+    out = _tensor_type(out, meta_list[0]).rename_(*names_list[0])
+    return out
 
 
 def inplace_recouple(func, tensor, *args, _tensor_type=StreamTensor, **kwargs):
