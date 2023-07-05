@@ -5,6 +5,10 @@ class TorchStreamWarning(RuntimeWarning):
     pass
 
 
+def warn(message: str):
+    warnings.warn(message, TorchStreamWarning, stacklevel=2)
+
+
 class TorchStreamFallbackWarning(TorchStreamWarning):
     pass
 

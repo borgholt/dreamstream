@@ -1,5 +1,4 @@
 import itertools
-import warnings
 
 from copy import deepcopy
 from typing import Any, Callable, List, Optional, Tuple, Union, Mapping, Sequence
@@ -9,7 +8,14 @@ import numpy as np
 
 from torch import Tensor
 
-from dreamstream.func_coverage import DECOUPLE_FUNCTIONS, RECOUPLE_FUNCTIONS, VALID_FUNCTIONS, OVERRIDDEN_FUNCTIONS
+from dreamstream.func_coverage import (
+    DECOUPLE_FUNCTIONS,
+    RECOUPLE_FUNCTIONS,
+    VALID_FUNCTIONS,
+    CUSTOMIZED_FUNCTIONS,
+    DEFAULT_VALID_FUNCTIONS,
+    INPLACE_RECOUPLE_FUNCTIONS,
+)
 from dreamstream.utils.flags import BATCH, LENGTH
 from dreamstream.utils.numba import (
     is_sorted_ascending,
@@ -19,46 +25,11 @@ from dreamstream.utils.numba import (
     update_eos_from_slice,
     update_lengths_from_list_of_indices,
 )
+from dreamstream import warnings
 
 
 # TODO (JDH): Make StreamMetadata methods like cat, split and index lazily evaluated such that they only evaluate when
 # they are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the graph.
-
-
-def decouple_recursive(x, metas: Optional[List["StreamMetadata"]] = None, names: Optional[List[str]] = None):
-    """Recurse a nested structure and decouple all StreamTensors."""
-    if isinstance(x, StreamTensor):
-        if metas is None and names is None:
-            return x.tensor()
-
-        tensor, meta, name = x.decouple()
-        metas.append(meta)
-        names.append(name)
-        return tensor
-
-    elif isinstance(x, Mapping):
-        return type(x)((k, decouple_recursive(v, metas=metas, names=names)) for k, v in x.items())
-    elif isinstance(x, Sequence):
-        return type(x)(decouple_recursive(v, metas=metas, names=names) for v in x)
-
-    return x
-
-
-def decouple(func, *args, **kwargs):
-    """Call function on tensor after decoupling it from StreamMetadata."""
-    args, kwargs = decouple_recursive((args, kwargs))
-    return func(*args, **kwargs)
-
-
-def recouple(func, *args, **kwargs):
-    """Call function on tensor after recoupling it to StreamMetadata and recouple again afterwards."""
-    metas, names = [], []
-    args, kwargs = decouple_recursive((args, kwargs), metas=metas, names=names)
-    if not all(metas[0] == m for m in metas):
-        raise ValueError("All StreamTensors must have the same StreamMetadata.")
-
-    tensor = func(*args, **kwargs)
-    return as_stream_tensor(data=tensor, meta=metas[0], names=names[0])
 
 
 class LazyProxy(object):
@@ -132,6 +103,7 @@ class StreamMetadata(LazyInit):
         "_eos",
         "_lengths",
         "_chunk_indices",
+        "_temp_buffer",
         "_min_length",
         "_max_length",
         "_lengths_updated",
@@ -190,6 +162,8 @@ class StreamMetadata(LazyInit):
         self._eos = eos_tensor
         self._lengths = lengths_tensor
         self._chunk_indices = chunk_indices
+
+        self._temp_buffer = None
 
         self._min_length = None
         self._max_length = None
@@ -333,7 +307,7 @@ class StreamMetadata(LazyInit):
         new_meta.__dict__.update(self.__dict__)
         return new_meta
 
-    def __deepcopy__(self):
+    def __deepcopy__(self, memo: Optional[dict] = None):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
             ids=self.ids,
@@ -781,12 +755,10 @@ class StreamTensor(torch.Tensor):
         """Return a new StreamTensor object."""
         return super().__new__(cls, data, *args, **kwargs)
 
-    def __init__(self, data, meta: StreamMetadata, *args, names: List[str] = None, **kwargs):
+    def __init__(self, data, meta: StreamMetadata, *args, **kwargs):
         """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
         super().__init__()
         self.meta = meta
-        if names is not None:
-            self.rename_(*names)
 
     def __getstate__(self) -> Tuple[torch.Tensor, StreamMetadata, List[str]]:
         """Return the state of the StreamTensor object."""
@@ -809,33 +781,39 @@ class StreamTensor(torch.Tensor):
         Raises:
             RuntimeError: If the intercepted function could not be handled safely.
         """
+
         if kwargs is None:
             kwargs = dict()
 
-        if func in OVERRIDDEN_FUNCTIONS:
-            # print(f"\n\n{func.__name__}: STREAM_TENSOR_FUNCTIONS\n\n")
-            return OVERRIDDEN_FUNCTIONS[func](*args, **kwargs)
+        if func in VALID_FUNCTIONS:
+            return super().__torch_function__(func, types, args, {})
 
-        if func in RECOUPLE_FUNCTIONS:
-            # print(f"\n\n{func.__name__}: RECOUPLE_FUNCTIONS\n\n")
-            return recouple(func, *args, **kwargs)
+        if func in CUSTOMIZED_FUNCTIONS:
+            return CUSTOMIZED_FUNCTIONS[func](*args, **kwargs)
 
         if func in DECOUPLE_FUNCTIONS:
-            # print(f"\n\n{func.__name__}: DECOUPLE_FUNCTIONS\n\n")
             return decouple(func, *args, **kwargs)
 
-        if func in VALID_FUNCTIONS:
-            # print(f"\n\n{func.__name__}: VALID_FUNCTIONS\n\n")
-            return super().__torch_function__(func, types, args, kwargs)
+        if func in RECOUPLE_FUNCTIONS:
+            return recouple(func, *args, **kwargs)
+
+        if func in INPLACE_RECOUPLE_FUNCTIONS:
+            return inplace_recouple(func, *args, **kwargs)
 
         # Unhandled functions are passed to the torch.Tensor.__torch_function__ method.
-        warnings.warn(
-            f"Function `{func.__name__}` is not handled by `StreamTensor.__torch_function__` "
-            "and may not work as expected."
-        )
+        if func not in DEFAULT_VALID_FUNCTIONS:
+            warnings.warn(
+                f"Function {func.__name__} is not handled by StreamTensor.__torch_function__ "
+                f"and may not work as expected."
+            )
+
+        return cls.default_valid(func, types, args, kwargs)
+
+    @classmethod
+    def default_valid(cls, func, types, args, kwargs):
         out = super().__torch_function__(func, types, args, kwargs)
 
-        metas = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]
+        metas = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, StreamTensor)]  # TODO (JDH): Make recursive
         if not all(s == metas[0] for s in metas[1:]):
             msg = (
                 f"Called a torch function ({func.__name__}) which was not handled by "
@@ -845,7 +823,10 @@ class StreamTensor(torch.Tensor):
             )
             raise RuntimeError(msg)
 
-        if isinstance(out, torch.Tensor):
+        if isinstance(out, StreamTensor):
+            out.meta = metas[0]
+            return out
+        elif isinstance(out, torch.Tensor):
             return StreamTensor(out, meta=metas[0])
 
         return out
@@ -865,6 +846,18 @@ class StreamTensor(torch.Tensor):
     @property
     def length_dim(self) -> int:
         return self.names.index(LENGTH)
+
+    @property
+    def real(self):
+        return torch.real(self)
+
+    @property
+    def imag(self):
+        return torch.imag(self)
+
+    @property
+    def T(self):
+        return self.permute(*reversed(range(self.ndim)))
 
     def is_batch_dim(self, dim: int) -> bool:
         return self.names[dim] == BATCH
@@ -895,10 +888,8 @@ class StreamTensor(torch.Tensor):
             return None
         if len(self.meta) == 1 and self.meta.max_length > 0:
             return self
-        tensor, meta, names = self.decouple()
-        batch_dim = names.index(BATCH)
-        tensor = torch.index_select(tensor, batch_dim, meta.lengths.nonzero().squeeze())
-        return as_stream_tensor(data=tensor, meta=meta.drop_empty(), names=names)
+
+        return torch.index_select(self, self.batch_dim, self.meta.lengths.nonzero().squeeze())
 
     def named_tensor(self) -> torch.Tensor:
         """Return the underlying torch.Tensor with names."""
@@ -912,40 +903,152 @@ class StreamTensor(torch.Tensor):
             length_dim -= 1
         return [x.narrow(length_dim, 0, x.meta.lengths.item()) for x in self.unbind(dim=batch_dim)]
 
-    def decouple(self, copy_meta: bool = False) -> Tuple[Tensor, StreamMetadata, Tuple[str]]:
+    def decouple(self, copy_meta: bool = False, keep_names: bool = False) -> Tuple[Tensor, StreamMetadata, Tuple[str]]:
         """Decouple the StreamTensor from names and metadata."""
         meta = self.meta.clone() if copy_meta else self.meta
-        return self.tensor(), meta, self.names
+        return self.tensor(keep_names=keep_names), meta, self.names
 
 
 def as_stream_tensor(
     data,
-    meta: StreamMetadata,
-    names: Tuple[Union[None, int]] = None,
+    meta: StreamMetadata = None,
+    names: Tuple[Union[None, str]] = None,
     dtype: torch.dtype = None,
     device: torch.device = None,
 ) -> StreamTensor:
     """Convert a tensor to a StreamTensor. See also `torch.as_tensor`."""
     data = torch.as_tensor(data, dtype=dtype, device=device)
-    if names:
+    if names is not None:
         data = data.refine_names(*names)  # Make the tensor named if it isn't already.
+    if meta is None:
+        meta = data.meta  # If meta is not given, assume it is already on the input data.
     return StreamTensor(data=data, meta=meta)
 
 
 def stream_tensor(
     data,
     meta: StreamMetadata,
-    names: Tuple[Union[None, int]],
+    names: Tuple[Union[None, str]],
     dtype: torch.dtype = None,
     device: torch.device = None,
     requires_grad: bool = False,
     pin_memory: bool = False,
 ) -> StreamTensor:
     """Convert a tensor to a StreamTensor. See also `torch.tensor`."""
-    if isinstance(data, torch.Tensor) and data.names != names:
-        data = data.rename(*names)
+    try:
+        data = torch.tensor(
+            data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory
+        )
+    except RuntimeError:
+        data = torch.tensor(data, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory)
+        data.rename_(*names)
 
-    data = torch.tensor(
-        data, names=names, dtype=dtype, device=device, requires_grad=requires_grad, pin_memory=pin_memory
-    )
     return StreamTensor(data=data, meta=meta)
+
+
+class TestTensor(torch.Tensor):
+    @staticmethod
+    def __new__(cls, data, meta, *args, **kwargs) -> "TestTensor":
+        """Return a new StreamTensor object."""
+        return super().__new__(cls, data, *args, **kwargs)
+
+    def __init__(self, data, meta, *args, names: List[str] = None, **kwargs):
+        """Initialize a StreamTensor object (self is StreamTensor, data is e.g. torch.Tensor)."""
+        super(TestTensor).__init__()
+        self.meta = meta
+
+    def tensor(self, keep_names: bool = False) -> torch.Tensor:
+        """Return the underlying torch.Tensor."""
+        tensor = torch.Tensor(self)  # 1-2 µs
+        if not keep_names:
+            tensor.rename_(None)  # 2-3 µs
+        return tensor
+
+    def clone(self, *args, **kwargs):
+        """Clone a StreamTensor object."""
+        return TestTensor(super().clone(*args, **kwargs), self.meta)
+
+
+def decouple_recursive(x, metas: Optional[List["StreamMetadata"]] = None, names: Optional[List[str]] = None):
+    """Recurse a nested structure and decouple all StreamTensors."""
+    if isinstance(x, StreamTensor):
+        if metas is None and names is None:
+            return x.tensor()
+
+        tensor, meta, name = x.decouple()
+        metas.append(meta)
+        names.append(name)
+        return tensor
+
+    elif isinstance(x, Mapping):
+        return type(x)((k, decouple_recursive(v, metas=metas, names=names)) for k, v in x.items())
+    elif isinstance(x, str):  # Must handle strings before Sequence, because strings are sequences.
+        return x
+    elif isinstance(x, Sequence):
+        return type(x)(decouple_recursive(v, metas=metas, names=names) for v in x)
+
+    return x
+
+
+# TODO (JDH): Use decouple_recursive instead of the two/three for loops below.
+
+# def decouple_recursive(x, metas: Optional[List["StreamMetadata"]] = None, names: Optional[List[str]] = None):
+#     """Recurse a nested structure and decouple all StreamTensors."""
+#     if isinstance(x, StreamTensor):
+#         if metas is None and names is None:
+#             return x.tensor()
+
+#         tensor, meta, name = x.decouple()
+#         metas.append(meta)
+#         names.append(name)
+#         return tensor
+
+#     elif isinstance(x, Mapping):
+#         return type(x)((k, decouple_recursive(v, metas=metas, names=names)) for k, v in x.items())
+#     elif isinstance(x, Sequence):
+#         return type(x)(decouple_recursive(v, metas=metas, names=names) for v in x)
+
+#     return x
+
+
+# def decouple(func, *args, **kwargs):
+#     """Call function on tensor after decoupling it from StreamMetadata."""
+#     args, kwargs = decouple_recursive((args, kwargs))
+#     return func(*args, **kwargs)
+
+
+# def recouple(func, *args, **kwargs):
+#     """Call function on tensor after recoupling it to StreamMetadata and recouple again afterwards."""
+#     metas, names = [], []
+#     args, kwargs = decouple_recursive((args, kwargs), metas=metas, names=names)
+#     if not all(metas[0] == m for m in metas):
+#         raise ValueError("All StreamTensors must have the same StreamMetadata.")
+
+#     tensor = func(*args, **kwargs)
+#     return as_stream_tensor(data=tensor, meta=metas[0], names=names[0])
+
+
+def decouple(func, *args, _keep_names=False, _tensor_type=StreamTensor, **kwargs):
+    """Call function on tensor after decoupling it from StreamMetadata and names."""
+    args = [arg.tensor(keep_names=_keep_names) if isinstance(arg, _tensor_type) else arg for arg in args]
+    kwargs = {k: v.tensor(keep_names=_keep_names) if isinstance(v, _tensor_type) else v for k, v in kwargs.items()}
+    return func(*args, **kwargs)
+
+
+def recouple(func, *args, _tensor_type=StreamTensor, **kwargs):
+    """Call function on tensor after decoupling it from StreamMetadata and names and recouple again afterwards."""
+    meta_list = [x.meta for x in [*args, *kwargs.values()] if isinstance(x, _tensor_type)]
+    names_list = [x.names for x in [*args, *kwargs.values()] if isinstance(x, _tensor_type)]
+    if not (all(m == meta_list[0] for m in meta_list[1:]) and all(n == names_list[0] for n in names_list[1:])):
+        raise RuntimeError("StreamTensor arguments must have the same metadata and names.")
+    out = decouple(func, *args, _tensor_type=_tensor_type, **kwargs)
+    out.rename_(*names_list[0])
+    return _tensor_type(out, meta_list[0])
+
+
+def inplace_recouple(func, tensor, *args, _tensor_type=StreamTensor, **kwargs):
+    """Call an in-place function on tensor after decoupling it from StreamMetadata and names, return the original."""
+    decouple(func, tensor, *args, _tensor_type=_tensor_type, **kwargs)  # Inplace operation by func on tensor.
+    return tensor
+
+

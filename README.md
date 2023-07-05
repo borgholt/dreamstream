@@ -158,6 +158,7 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
 - How do we deal with 
   - Special tokens concatenated to the input? E.g. "translate" and "language" tokens in Whisper?
   - Learnable tokens concatenated to the input sequence before an MHSA layer?
+- Support loading/saving of named tensors by custom `__reduce__` or `__reduce_ex__`.
 
 ## Can we use DreamStream for training?
 

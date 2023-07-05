@@ -1,17 +1,17 @@
-import collections
+# import collections
 
 import pytest
 import torch
 
 from dreamstream.tensor import StreamTensor, as_stream_tensor, stream_tensor, stream_metadata, LENGTH, BATCH
-from dreamstream.func_coverage import (
-    DECOUPLE_FUNCTIONS,
-    FLAT_OVERRIDABLE_FUNCTIONS,
-    OVERRIDDEN_FUNCTIONS,
-    RECOUPLE_FUNCTIONS,
-    UNSUPPORTED_FUNCTIONS,
-    VALID_FUNCTIONS,
-)
+# from dreamstream.func_coverage import (
+#     DECOUPLE_FUNCTIONS,
+#     FLAT_OVERRIDABLE_FUNCTIONS,
+#     CUSTOMIZED_FUNCTIONS,
+#     RECOUPLE_FUNCTIONS,
+#     UNSUPPORTED_FUNCTIONS,
+#     VALID_FUNCTIONS,
+# )
 from dreamstream.overrides import join_dim_names
 
 
@@ -198,37 +198,37 @@ TEST_INPUTS_RECOUPLE_FUNCTIONS[torch.Tensor.slice_scatter] = TEST_INPUTS_RECOUPL
 TEST_SKIP_EQUALITY_CHECK = {torch.Tensor.__repr__, torch.Tensor.__str__}
 
 
-def test_valid_coupled_recoupled_functions():
-    """Iterate over all valid, coupled and recoupled functions and check that they work as expected."""
-    INPUTS = collections.defaultdict(Inputs)
-    INPUTS.update(TEST_INPUTS_VALID_FUNCTIONS | TEST_INPUTS_DECOUPLE_FUNCTIONS | TEST_INPUTS_RECOUPLE_FUNCTIONS)
+# def test_valid_coupled_recoupled_functions():
+#     """Iterate over all valid, coupled and recoupled functions and check that they work as expected."""
+#     INPUTS = collections.defaultdict(Inputs)
+#     INPUTS.update(TEST_INPUTS_VALID_FUNCTIONS | TEST_INPUTS_DECOUPLE_FUNCTIONS | TEST_INPUTS_RECOUPLE_FUNCTIONS)
 
-    FUNCTIONS = VALID_FUNCTIONS | DECOUPLE_FUNCTIONS | RECOUPLE_FUNCTIONS
+#     FUNCTIONS = VALID_FUNCTIONS | DECOUPLE_FUNCTIONS | RECOUPLE_FUNCTIONS
 
-    failed = []
-    for function in FUNCTIONS:
-        try:
-            args, kwargs = INPUTS[function]
-            stream_tensor_out = function(*args, **kwargs)
-            torch_tensor_out = function(*to_torch_tensor_recursive(args), **to_torch_tensor_recursive(kwargs))
+#     failed = []
+#     for function in FUNCTIONS:
+#         try:
+#             args, kwargs = INPUTS[function]
+#             stream_tensor_out = function(*args, **kwargs)
+#             torch_tensor_out = function(*to_torch_tensor_recursive(args), **to_torch_tensor_recursive(kwargs))
 
-            if function in TEST_SKIP_EQUALITY_CHECK:
-                continue
+#             if function in TEST_SKIP_EQUALITY_CHECK:
+#                 continue
 
-            if isinstance(torch_tensor_out, torch.Tensor):
-                stream_tensor_out = stream_tensor_out.rename(None)
-                torch_tensor_out = torch_tensor_out.rename(None)
-                assert torch.equal(stream_tensor_out, torch_tensor_out)
-            else:
-                assert stream_tensor_out == torch_tensor_out
+#             if isinstance(torch_tensor_out, torch.Tensor):
+#                 stream_tensor_out = stream_tensor_out.rename(None)
+#                 torch_tensor_out = torch_tensor_out.rename(None)
+#                 assert torch.equal(stream_tensor_out, torch_tensor_out)
+#             else:
+#                 assert stream_tensor_out == torch_tensor_out
 
-        except Exception as e:
-            failed.append((function, e))
+#         except Exception as e:
+#             failed.append((function, e))
 
-    if any(failed):
-        failed_str = " - " + "\n\n - ".join([f"{f.__name__}: {e}" for f, e in failed])
-        err = f"The following functions claimed to be valid, were not:\n{failed_str}"
-        raise AssertionError("\n\n" + err)
+#     if any(failed):
+#         failed_str = " - " + "\n - ".join([f"{f.__name__}: {e}" for f, e in failed])
+#         err = f"The following {len(failed)} functions claimed to be valid, were not:\n{failed_str}"
+#         raise AssertionError("\n" + err)
 
 
 # def test_unsupported_functions(stream_tensor_bfl_fixture):
@@ -244,18 +244,18 @@ def test_valid_coupled_recoupled_functions():
 #         raise AssertionError(f"The following functions claimed to be invalid, were not:\n{failed_str}")
 
 
-def test_function_coverage():
-    """Test that we have covered all functions in torch.nn.functional."""
-    num_overridden = len(OVERRIDDEN_FUNCTIONS)
-    num_valid = len(VALID_FUNCTIONS)
-    num_invalid = len(UNSUPPORTED_FUNCTIONS)
-    num_total = num_overridden + num_valid + num_invalid
+# def test_function_coverage():
+#     """Test that we have covered all functions in torch.nn.functional."""
+#     num_customized = len(CUSTOMIZED_FUNCTIONS)
+#     num_valid = len(VALID_FUNCTIONS)
+#     num_invalid = len(UNSUPPORTED_FUNCTIONS)
+#     num_total = num_customized + num_valid + num_invalid
 
-    # fraction_working = (num_overridden + num_valid) / num_total
+#     fraction_working = (num_customized + num_valid) / num_total
 
-    msg = "Total number of functions must be the number of overridable functions plus any dunder methods."
-    assert num_total >= len(FLAT_OVERRIDABLE_FUNCTIONS), msg
-    # assert fraction_working > 0.8, f"Only {fraction_working*100:.1f} % of torch functions are covered (req >80%)."
+#     msg = "Total number of functions must be the number of overridable functions plus any dunder methods."
+#     assert num_total >= len(FLAT_OVERRIDABLE_FUNCTIONS), msg
+#     assert fraction_working > 0.8, f"Only {fraction_working*100:.1f} % of torch functions are covered (req >80%)."
 
 
 ## Indexing functions

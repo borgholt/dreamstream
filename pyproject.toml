@@ -1,3 +1,22 @@
+[project]
+name = "TorchStream"
+version = "0.1.0"
+authors = [
+    {name = "Jakob Drachmann Havtorn", email = "jdh@corti.ai"},
+    {name = "Lasse Borgholt", email = "lb@corti.ai"},
+]
+description = "Plug-and-play data streaming for PyTorch"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+keywords = ["streaming", "online", "automatic speech recognition", "asr", "neural networks", "pytorch", "torch"]
+dependencies = [
+    "torch",
+]
+
+[tool.setuptools]
+py-modules = ["dreamstream"]
+
 [tool.ruff]
 line-length = 120
 
