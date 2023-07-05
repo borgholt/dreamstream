@@ -116,7 +116,7 @@ def report_timings(timings, prefix: Optional[str] = None, suffix: Optional[str] 
         s = ""
 
     s += (
-        f"number={timings.number:>5d} | [{format_time(timings.min):>8s}, {format_time(timings.max):>8s}] |"
+        f"number={timings.number:>5d} | [{format_time(timings.min):>8s}, {format_time(timings.max):>8s}] | "
         f"{format_time(timings.median):>8s} | {format_time(timings.mean):>8s} +- {format_time(timings.std):>8s}"
     )
 
