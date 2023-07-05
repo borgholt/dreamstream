@@ -109,7 +109,7 @@ class OutputCollector(dict):
         for t in stream_tensors:
             if BATCH in t.names:
                 for x in t.unpad_sequence():
-                    if x.meta.max_length > 0:
+                    if x.meta.max_length > 0:  # NOTE (JDH): Will error out when the first chunk output has length == 0.
                         self._update_unary(x)
             else:
                 assert t.meta.size() == 1, "The tensor has no batch dimension, but metadata has multiple elements."
@@ -124,9 +124,13 @@ class OutputCollector(dict):
             self.closed_entries.add(_id)
 
         if _id in self:
-            assert not stream_tensor.meta.sos.item(), "The tensor is the first chunk."
+            if stream_tensor.meta.sos.item():
+                raise ValueError(f"Tried to collect a chunk on a known id {_id} but got a chunk claiming to be first.")
+
             length_dim = stream_tensor.names.index(LENGTH)
             self[_id] = torch.cat([self[_id], stream_tensor], dim=length_dim)
         else:
-            assert stream_tensor.meta.sos.item(), "The tensor is not the first chunk."
+            if not stream_tensor.meta.sos.item():
+                raise ValueError(f"Tried to start a new id `{_id}` but the received chunk was not the first chunk.")
+
             self[_id] = stream_tensor

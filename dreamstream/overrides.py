@@ -9,8 +9,9 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from dreamstream.tensor import StreamTensor, StreamMetadata, decouple_recursive
-from dreamstream.func_coverage import OVERRIDDEN_FUNCTIONS
+from dreamstream.func_coverage import CUSTOMIZED_FUNCTIONS
 from dreamstream.utils.flags import BATCH, LENGTH
+from dreamstream.utils.operations import sequence_mask
 from dreamstream.warnings import fallback_operation_warning
 
 
@@ -42,7 +43,7 @@ def implements(torch_function):
     def decorator(func):
         functools.update_wrapper(func, torch_function, assigned=WRAPPER_ASSIGNMENTS)
         func.__doc__ = augment_documentation(func.__doc__, torch_function.__doc__)
-        OVERRIDDEN_FUNCTIONS[torch_function] = func
+        CUSTOMIZED_FUNCTIONS[torch_function] = func
         return func
 
     return decorator
@@ -62,8 +63,8 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     is_batch_dim = [t.is_batch_dim(dim) for t in tensors if isinstance(t, StreamTensor)]  # TODO (JDH): Speed this up
     if any(is_batch_dim):
         require_all_stream_tensors(tensors, "Cannot concatenate StreamTensor and torch.Tensor along batch dimension.")
-        tensors = [t.named_tensor() for t in tensors]
-        tensor = torch.cat(tensors, dim=dim, out=out)
+        torch_tensors = [t.named_tensor() for t in tensors]
+        tensor = torch.cat(torch_tensors, dim=dim, out=out)
         meta = StreamMetadata.cat_batch([t.meta for t in tensors])  # TODO (JDH): Make this lazily evaluated.
         return StreamTensor(tensor, meta)
 
@@ -72,11 +73,11 @@ def cat(tensors: List[Union[StreamTensor, Tensor]], dim=0, *, out=None):
     if any(is_length_dim):
         for t in tensors[:-1]:
             if isinstance(t, StreamTensor) and t.meta.lengths.min() < t.max_length():
-                raise NotImplementedError("Only the last tensor can be padded when concatenating along length.")
-        tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
-        tensor = torch.cat(tensors, dim=dim, out=out)
+                raise NotImplementedError("Only the right-most input can be padded when concatenating along length.")
+        torch_tensors = [t.named_tensor() if isinstance(t, StreamTensor) else t for t in tensors]
+        tensor = torch.cat(torch_tensors, dim=dim, out=out)
         meta = StreamMetadata.cat_length([t.meta for t in tensors if isinstance(t, StreamTensor)])
-        meta.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])
+        meta.lengths += sum([t.size(dim) for t in tensors if not isinstance(t, StreamTensor)])  # Add torch.Tensors
         return StreamTensor(tensor, meta)
 
     # Concatenation along a dimension that is neither batch nor length.
@@ -162,13 +163,31 @@ def unbind(tensor: StreamTensor, dim=0) -> List[StreamTensor]:
     return tensors
 
 
-# @implements(torch.nn.functional.pad)
-# def pad(input: StreamTensor, pad: List[int], mode: str = "constant", value: float = None):
-#     raise NotImplementedError("pad is not currently supported for StreamTensors.")
+@implements(torch.quantize_per_tensor)
+def quantize_per_tensor(input: Tuple[StreamTensor], scale: float, zero_point: int, dtype: torch.dtype):
+    input = input.tensor() if isinstance(input, StreamTensor) else tuple([t.tensor() for t in input])
+    return torch.quantize_per_tensor(input, scale, zero_point, dtype)
 
 
-def _compute_conv_output_lengths(input_lengths: Tensor, kernel_width: int, stride: int):
-    return
+@implements(torch.quantize_per_tensor_dynamic)
+def quantize_per_tensor_dynamic(input: Tuple[StreamTensor], dtype: torch.dtype, reduce_range: bool):
+    input = input.tensor() if isinstance(input, StreamTensor) else tuple([t.tensor() for t in input])
+    return torch.quantize_per_tensor_dynamic(input, dtype, reduce_range)
+
+
+@implements(torch.fake_quantize_per_tensor_affine)
+def fake_quantize_per_tensor_affine(input: StreamTensor, scale: float, zero_point: int, quant_min: int, quant_max: int):
+    return torch.fake_quantize_per_tensor_affine(input.tensor(), scale, zero_point, quant_min, quant_max)
+
+
+@implements(torch.frexp)
+@implements(torch.Tensor.frexp)
+def frexp(input: StreamTensor):
+    tensor, meta, names = input.decouple()
+    out = torch.frexp(input.tensor())
+    mantissa = StreamTensor(out.mantissa.rename(*names), meta=meta)
+    exponent = StreamTensor(out.exponent.rename(*names), meta=meta)
+    return torch.return_types.frexp((mantissa, exponent))
 
 
 @implements(torch.conv1d)
@@ -224,13 +243,17 @@ def conv1d(
         for i, (start, end, _id, eos) in enumerate(zip(next_start, meta.lengths, meta.ids, meta.eos)):
             if not eos:
                 buffer[_id] = input[i, ..., start:end]
+    meta._temp_buffer = buffer
 
     # Convolve input and revert to StreamTensor.
     output = torch.conv1d(input, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)
     output.rename_(*names)
     meta.lengths = output_lengths
-    # TODO: Consider whether to zero out the padding.
-    return StreamTensor(output, meta), buffer
+
+    # Zero out the padding.
+    mask = sequence_mask(output_lengths, max_len=output.size(-1), device=output.device)
+    output *= mask.unsqueeze(1)
+    return StreamTensor(output, meta)
 
 
 IntegerTensorType = Union[torch.ByteTensor, torch.CharTensor, torch.ShortTensor, torch.IntTensor, torch.LongTensor]
