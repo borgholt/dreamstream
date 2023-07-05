@@ -587,10 +587,6 @@ class StreamMetadata(LazyInit):
         Returns:
             StreamMetadata: The concatenated StreamMetadata object.
         """
-
-        if not all(isinstance(s, StreamMetadata) for s in metas):
-            raise TypeError("All objects in list must be of type StreamMetadata.")
-
         if len(metas) == 1:
             return deepcopy(metas[0])
 
@@ -632,6 +628,12 @@ class StreamMetadata(LazyInit):
         lengths = sum([s.lengths for s in metas])
         if all(s.chunk_indices is not None for s in metas):
             chunk_indices = metas[-1].chunk_indices.clone()  # TODO (JDH): This assumes the right-most chunk is the last
+        elif all(s.chunk_indices is None for s in metas):
+            chunk_indices = None
+        else:
+            raise ValueError(
+                "Cannot concatenate StreamMetadatas along lenght when some but not all `chunk_indices` are `None`."
+            )
         return cls(ids, sos, eos, lengths, chunk_indices)
 
     def split(self, split_size_or_sections: Union[int, List[int]], dim: str) -> List["StreamMetadata"]:
@@ -665,7 +667,9 @@ class StreamMetadata(LazyInit):
         split_eos = self.eos.split(split_size_or_sections)
         split_lengths = self.lengths.split(split_size_or_sections)
         split_chunk_indices = (
-            self.chunk_indices.split(split_size_or_sections) if self.chunk_indices is not None else None
+            self.chunk_indices.split(split_size_or_sections)
+            if self.chunk_indices is not None
+            else [None] * len(split_ids)
         )
         args_iter = zip(split_ids, split_sos, split_eos, split_lengths, split_chunk_indices)
 
