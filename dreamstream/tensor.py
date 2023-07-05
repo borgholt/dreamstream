@@ -1050,5 +1050,3 @@ def inplace_recouple(func, tensor, *args, _tensor_type=StreamTensor, **kwargs):
     """Call an in-place function on tensor after decoupling it from StreamMetadata and names, return the original."""
     decouple(func, tensor, *args, _tensor_type=_tensor_type, **kwargs)  # Inplace operation by func on tensor.
     return tensor
-
-

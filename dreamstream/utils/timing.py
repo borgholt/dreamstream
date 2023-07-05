@@ -13,7 +13,7 @@ UNITS = {"ns": 1e-9, "µs": 1e-6, "ms": 1e-3, "s": 1.0}
 
 def format_time(dt, unit=None, precision=4):
     """Format a time in seconds by rescaling and appending appropriate unit
-    
+
     The returned string will always have length at most 5 (precision) + 2 (unit) + 1 (space) = 7
     """
     if unit is not None:
@@ -90,7 +90,7 @@ def timeit(
     mean = np.mean(timings)
     median = np.median(timings)
     std = np.std(timings)
-    
+
     results = SimpleNamespace(min=min, max=max, mean=mean, median=median, std=std, number=number, repeats=repeats)
 
     if max >= min * 4:
@@ -114,7 +114,7 @@ def report_timings(timings, prefix: Optional[str] = None, suffix: Optional[str] 
         s = f"{prefix:15s} | "
     else:
         s = ""
-        
+
     s += f"number={timings.number:>5d} | [{format_time(timings.min):>8s}, {format_time(timings.max):>8s}] | {format_time(timings.median):>8s} | {format_time(timings.mean):>8s} +- {format_time(timings.std):>8s}"
 
     if suffix:
