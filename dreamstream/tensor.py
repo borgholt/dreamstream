@@ -32,7 +32,69 @@ from dreamstream import warnings
 # they are needed. This minimizes overhead computation on StreamTensors that end up as leaf nodes in the graph.
 
 
-class StreamMetadata:
+class LazyProxy(object):
+    """A proxy class that lazily instantiates an object of type cls with arguments *args and **kwargs."""
+
+    def __init__(self, cls, *args, **kwargs):
+        self.__dict__["_cls"] = cls
+        self.__dict__["_args"] = args
+        self.__dict__["_kwargs"] = kwargs
+        self.__dict__["_obj"] = None
+
+    def __getattr__(self, name):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return getattr(self.__dict__["_obj"], name)
+
+    def __setattr__(self, name, value):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        setattr(self.__dict__["_obj"], name, value)
+
+    def __getitem__(self, key):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__getitem__(key)
+
+    def __copy__(self):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__copy__()
+
+    def __eq__(self, other):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__eq__(other)
+
+    def __len__(self):
+        if self.__dict__["_obj"] is None:
+            self.__init_obj()
+
+        return self.__dict__["_obj"].__len__()
+
+    def __repr__(self):
+        if self.__dict__["_obj"] is None:
+            return f"LazyProxy({self.__dict__['_cls'].__name__}, {self.__dict__['_args']}, {self.__dict__['_kwargs']})"
+        return self.__dict__["_obj"].__repr__()
+
+    def __init_obj(self):
+        self.__dict__["_obj"] = object.__new__(self.__dict__["_cls"])
+        self.__dict__["_obj"].__init__(*self.__dict__["_args"], **self.__dict__["_kwargs"])
+
+
+class LazyInit(object):
+    """A class that lazily initializes its attributes."""
+
+    def __new__(cls, *args, **kwargs):
+        return LazyProxy(cls, *args, **kwargs)
+
+
+class StreamMetadata(LazyInit):
     """Metadata associated with a batch of streamed input tensors."""
 
     __slots__ = [
@@ -61,8 +123,10 @@ class StreamMetadata:
         eos: Union[bool, List[bool], torch.BoolTensor],
         lengths: Union[int, List[int], torch.IntTensor],
         chunk_indices: Optional[Union[int, List[int], torch.IntTensor]] = None,
+        _copy_on_init: bool = False,
     ):
-        # TODO: Make initialization lazy such that it only happens when the StreamMetadata is actually used.
+        super().__init__()
+
         if isinstance(ids, str):
             ids = [ids]
         if isinstance(lengths, int):
@@ -75,20 +139,28 @@ class StreamMetadata:
         if not len(ids) == len(lengths) == len(sos) == len(eos):
             raise ValueError("ids, lengths, sos and eos must have the same length.")
 
-        sos = torch.as_tensor(sos, dtype=torch.bool)
-        eos = torch.as_tensor(eos, dtype=torch.bool)
-        lengths = torch.as_tensor(lengths, dtype=torch.int)
+        sos_tensor = torch.as_tensor(sos, dtype=torch.bool)
+        eos_tensor = torch.as_tensor(eos, dtype=torch.bool)
+        lengths_tensor = torch.as_tensor(lengths, dtype=torch.int)
+
+        if _copy_on_init:
+            if sos_tensor is sos:
+                sos_tensor = sos_tensor.clone()
+            if eos_tensor is eos:
+                eos_tensor = eos_tensor.clone()
+            if lengths_tensor is lengths:
+                lengths_tensor = lengths_tensor.clone()
 
         if not all(isinstance(i, str) for i in ids):
             raise ValueError("ids must be a list of strings.")
 
-        if sos.ndim > 1 or eos.ndim > 1 or lengths.ndim > 1:
+        if lengths_tensor.ndim > 1 or eos_tensor.ndim > 1 or lengths_tensor.ndim > 1:
             raise ValueError("sos, eos and lengths must be 1-dimensional.")
 
         self.ids = ids
-        self._sos = sos
-        self._eos = eos
-        self._lengths = lengths
+        self._sos = sos_tensor
+        self._eos = eos_tensor
+        self._lengths = lengths_tensor
         self._chunk_indices = chunk_indices
 
         self._temp_buffer = None
@@ -96,7 +168,6 @@ class StreamMetadata:
         self._min_length = None
         self._max_length = None
         self._lengths_updated = True
-        self._update_lengths()
 
         self._any_starting = None
         self._any_ending = None
@@ -105,7 +176,6 @@ class StreamMetadata:
         self._any_starting_or_ending = None
         self._all_starting_and_ending = None
         self._sos_or_eos_updated = True
-        self._update_logicals()
 
     @property
     def sos(self) -> torch.BoolTensor:
@@ -240,10 +310,12 @@ class StreamMetadata:
     def __deepcopy__(self, memo: Optional[dict] = None):
         """Return a deep copy of the StreamMetadata object."""
         return StreamMetadata(
-            ids=deepcopy(self.ids),
-            sos=self.sos.clone(),
-            eos=self.eos.clone(),
-            lengths=self.lengths.clone(),
+            ids=self.ids,
+            sos=self.sos,
+            eos=self.eos,
+            lengths=self.lengths,
+            chunk_indices=self._chunk_indices,
+            _copy_on_init=True,
         )
 
     def __eq__(self, other: "StreamMetadata") -> bool:
@@ -253,6 +325,8 @@ class StreamMetadata:
             and self.sos.equal(other.sos)
             and self.eos.equal(other.eos)
             and self.lengths.equal(other.lengths)
+            and (self._chunk_indices is None and other._chunk_indices is None)
+            or self._chunk_indices.equal(other.lengths)
         )
 
     def __len__(self) -> int:
@@ -283,7 +357,6 @@ class StreamMetadata:
                 i += 1
 
             short_ids_repr = ", ".join(repr_ids) + ", ..., " + repr(last)
-            print(short_ids_repr, len(short_ids_repr))
         else:
             short_ids_repr = repr(self.ids)
 
@@ -344,14 +417,16 @@ class StreamMetadata:
             sos = self.sos[indices]
             eos = self.eos[indices]
             lengths = self.lengths[indices]
-            return StreamMetadata(ids, sos, eos, lengths)
+            chunk_indices = self._chunk_indices[indices] if self._chunk_indices is not None else None
+            return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
         if isinstance(indices, int):
             ids = [self.ids[indices]]
             sos = self.sos[[indices]]
             eos = self.eos[[indices]]
             lengths = self.lengths[[indices]]
-            return StreamMetadata(ids, sos, eos, lengths)
+            chunk_indices = self._chunk_indices[[indices]] if self._chunk_indices is not None else None
+            return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
         if isinstance(indices, slice):
             ids = self.ids[indices]
@@ -361,7 +436,8 @@ class StreamMetadata:
         sos = self.sos[indices]
         eos = self.eos[indices]
         lengths = self.lengths[indices]
-        return StreamMetadata(ids, sos, eos, lengths)
+        chunk_indices = self._chunk_indices[indices] if self._chunk_indices is not None else None
+        return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
     def index_length(
         self, indices: Union[None, int, slice, List[int], Tuple[int], torch.IntTensor, torch.BoolTensor]
@@ -404,12 +480,14 @@ class StreamMetadata:
             sos = self.sos[keep_ids]
             eos = self.eos[keep_ids]
             lengths = self.lengths[keep_ids]
+            chunk_indices = self._chunk_indices[keep_ids] if self._chunk_indices is not None else None
             indices = indices[keep_ids]
         else:  # includes `broadcast_batch == True`
             ids = deepcopy(self.ids)
             sos = self.sos
             eos = self.eos
             lengths = self.lengths
+            chunk_indices = self._chunk_indices
 
         sos = sos & indices[:, 0]  # SOS only if the first index is included.
         if not broadcast_length:
@@ -419,8 +497,9 @@ class StreamMetadata:
             eos = eos & (start < lengths) & (lengths <= stop)
             # eos = eos & indices[range(indices.size(0)), lengths - 1]  # EOS only if the last non-padding is included.
             lengths = cumsum[keep_ids, lengths - 1]
+            chunk_indices = chunk_indices[keep_ids] if chunk_indices is not None else None
 
-        return StreamMetadata(ids, sos, eos, lengths)
+        return StreamMetadata(ids, sos, eos, lengths, chunk_indices)
 
     def _index_length_int(self, index: int) -> "StreamMetadata":
         # Convert negative indices to positive
@@ -433,7 +512,8 @@ class StreamMetadata:
         # TODO (JDH): numba compiled arithmetic is much faster but slowed down due to conversion to/from numpy
         #   Maybe we should store sos and eos as numpy arrays instead of torch tensors?
         eos = torch.from_numpy(update_eos_from_integer(self.eos.numpy(), self.lengths.numpy(), index))
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_slice(self, slice: slice) -> "StreamMetadata":
         # Convert start and stop to positive indices
@@ -454,7 +534,8 @@ class StreamMetadata:
 
         sos = self.sos.clone() if start == 0 and stop > 0 else torch.zeros_like(self.sos)
         eos = torch.from_numpy(update_eos_from_slice(self.eos.numpy(), self.lengths.numpy(), start, stop))
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_list(self, indices: Union[List[int], Tuple[int]]) -> "StreamMetadata":
         # Convert to numpy arrays for faster manipulation and numba jit support.
@@ -472,7 +553,8 @@ class StreamMetadata:
         sos = self.sos.clone() if min_i == 0 else torch.zeros_like(self.sos)
         eos = torch.from_numpy(update_eos_from_slice(self.eos.numpy(), lengths_np, min_i, max_i))
         # TODO (JDH): Keep EOS true if the indexing spans over the last non-padding element.
-        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths)
+        chunk_indices = self._chunk_indices.clone() if self._chunk_indices is not None else None
+        return StreamMetadata(deepcopy(self.ids), sos, eos, lengths, chunk_indices)
 
     def _index_length_1d_tensor(self, indices: torch.Tensor) -> "StreamMetadata":
         if indices.dtype == torch.bool:
@@ -505,16 +587,18 @@ class StreamMetadata:
         Returns:
             StreamMetadata: The concatenated StreamMetadata object.
         """
-
         if len(metas) == 1:
             return deepcopy(metas[0])
 
-        assert all(isinstance(s, StreamMetadata) for s in metas)
         ids = list(itertools.chain.from_iterable([s.ids for s in metas]))
         sos = torch.cat([s.sos for s in metas], dim=0)
         eos = torch.cat([s.eos for s in metas], dim=0)
         lengths = torch.cat([s.lengths for s in metas], dim=0)
-        return cls(ids, sos, eos, lengths)
+        if all(s.chunk_indices is not None for s in metas):
+            chunk_indices = torch.cat([s.chunk_indices for s in metas], dim=0)
+        else:
+            chunk_indices = None
+        return cls(ids, sos, eos, lengths, chunk_indices)
 
     @classmethod
     def cat_length(cls, metas: List["StreamMetadata"]) -> "StreamMetadata":
@@ -542,7 +626,15 @@ class StreamMetadata:
         sos = metas[0].sos.clone()
         eos = metas[-1].eos.clone()
         lengths = sum([s.lengths for s in metas])
-        return cls(ids, sos, eos, lengths)
+        if all(s.chunk_indices is not None for s in metas):
+            chunk_indices = metas[-1].chunk_indices.clone()  # TODO (JDH): This assumes the right-most chunk is the last
+        elif all(s.chunk_indices is None for s in metas):
+            chunk_indices = None
+        else:
+            raise ValueError(
+                "Cannot concatenate StreamMetadatas along lenght when some but not all `chunk_indices` are `None`."
+            )
+        return cls(ids, sos, eos, lengths, chunk_indices)
 
     def split(self, split_size_or_sections: Union[int, List[int]], dim: str) -> List["StreamMetadata"]:
         """Split a StreamMetadata object into a list of StreamMetadata objects along a given dimension."""
@@ -571,10 +663,15 @@ class StreamMetadata:
             slices = np.cumsum([0] + split_size_or_sections)
             split_ids = [self.ids[i:j] for i, j in zip(slices[:-1], slices[1:])]
 
-        split_first = self.sos.split(split_size_or_sections)
-        split_last = self.eos.split(split_size_or_sections)
+        split_sos = self.sos.split(split_size_or_sections)
+        split_eos = self.eos.split(split_size_or_sections)
         split_lengths = self.lengths.split(split_size_or_sections)
-        args_iter = zip(split_ids, split_first, split_last, split_lengths)
+        split_chunk_indices = (
+            self.chunk_indices.split(split_size_or_sections)
+            if self.chunk_indices is not None
+            else [None] * len(split_ids)
+        )
+        args_iter = zip(split_ids, split_sos, split_eos, split_lengths, split_chunk_indices)
 
         return [stream_metadata(*args) for args in args_iter]
 
@@ -898,6 +995,25 @@ def decouple_recursive(x, metas: Optional[List["StreamMetadata"]] = None, names:
 
 
 # TODO (JDH): Use decouple_recursive instead of the two/three for loops below.
+
+# def decouple_recursive(x, metas: Optional[List["StreamMetadata"]] = None, names: Optional[List[str]] = None):
+#     """Recurse a nested structure and decouple all StreamTensors."""
+#     if isinstance(x, StreamTensor):
+#         if metas is None and names is None:
+#             return x.tensor()
+
+#         tensor, meta, name = x.decouple()
+#         metas.append(meta)
+#         names.append(name)
+#         return tensor
+
+#     elif isinstance(x, Mapping):
+#         return type(x)((k, decouple_recursive(v, metas=metas, names=names)) for k, v in x.items())
+#     elif isinstance(x, Sequence):
+#         return type(x)(decouple_recursive(v, metas=metas, names=names) for v in x)
+
+#     return x
+
 
 # def decouple(func, *args, **kwargs):
 #     """Call function on tensor after decoupling it from StreamMetadata."""
