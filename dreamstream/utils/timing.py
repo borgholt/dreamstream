@@ -1,3 +1,13 @@
+"""
+This module makes available a function `timeit` that can be used to time the execution of a statement similar to the
+magic function `%timeit` in IPython. The function `timeit` is a wrapper around the `autorange` and `repeat` methods 
+from the `timeit` module.
+"""
+
+
+__all__ = ["timeit"]
+
+
 import warnings
 import timeit as timeit_module
 
