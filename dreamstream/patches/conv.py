@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import torch
 
 from dreamstream.tensor import StreamTensor
@@ -10,14 +12,17 @@ from dreamstream.nn.utils import pad_stream_tensor
 # TODO (LB): Add support for transposed convolutions.
 
 
-def conv_1d_pre_hook(self, inputs):
-    is_stream_tensor = isinstance(inputs[0], StreamTensor)
+def conv_1d_pre_hook(
+    self,
+    inputs: Tuple[torch.Tensor],
+) -> Tuple[torch.Tensor]:
+    input = inputs[0]
+    is_stream_tensor = isinstance(input, StreamTensor)
     if not self.streaming:
         if is_stream_tensor:
             raise RuntimeError("Using StreamTensors in offline mode might result in unexpected behavior.")
         return inputs
 
-    input = inputs[0]
     if not is_stream_tensor:
         raise RuntimeError("The input is expected to be StreamTensor when in online mode.")
 
@@ -42,9 +47,12 @@ def conv_1d_pre_hook(self, inputs):
     return input
 
 
-def conv_1d_post_hook(self, inputs, outputs):
+def conv_1d_post_hook(
+    self: torch.nn.Module,
+    inputs: Tuple[torch.Tensor],
+    outputs: Tuple[torch.Tensor],
+) -> Tuple[torch.Tensor]:
     if self.streaming:
-        outputs = outputs
         self.stream_buffer.update(outputs.meta._temp_buffer)
         outputs.meta._temp_buffer = None
 
