@@ -33,7 +33,7 @@ class MetadataTensor(torch.Tensor):
     def __new__(cls, tensor, metadata: dict):
         # The wrapping tensor (MetadataTensor) shouldn't hold any
         # memory for the class in question, but it should still
-        # advertise the same device as before
+        # advertise the same device as before.
         r = torch.Tensor._make_wrapper_subclass(
             cls,
             tensor.size(),

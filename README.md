@@ -160,6 +160,14 @@ PyTorch models are typically trained and evaluated on batches of data. However, 
   - Learnable tokens concatenated to the input sequence before an MHSA layer?
 - Support loading/saving of named tensors by custom `__reduce__` or `__reduce_ex__`.
 
+- Problems related to TorchScript:
+  - When using `torch.jit.script` to compile torch code to TorchScript, behaviors of user-defined subclasses of `torch.Tensor` are silently ignored. 
+    - For instance, existing attributes of `torch.Tensor` that are overriden do not return the value from the subclass but the value from the `torch.Tensor` (e.g. `__len__` or `ndim`)
+      - torch.Tensor.softmax -> dreamstream.StreamTensor(Tensor).softmax will call torch.Tensor.softmax.
+    - Similarly, new attributes that are added in the subclass are not available (e.g. `decouple`) and throw an error when scripting.
+  - When a module/function has been scripted, it reduces to a single function call (with a different signature). This means any internal calls to torch functions which would previosuly be intercepted by `__torch_function__` are no longer intercepted. Hence, all custom functionality implemented in `__torch_function__` is lost when scripting.
+
+
 ## Can we use DreamStream for training?
 
 - Case 1: Forward pass each chunk and compute loss. Detach module stream buffers after each module forward. Backpropagate and update parameters. This is O(1) memory in terms of the number of chunks for convolutions and RNNs but O(N^2) for Transformers.
@@ -182,7 +190,7 @@ Documentation is written in Sphinx and is inspired by [PyTorch](https://github.c
 
 ```bash
 conda deactivate
-conda create -y -n dreamstream python==3.11
+conda create -y -n dreamstream python==3.10
 conda activate dreamstream
 pip install --upgrade --editable . 
 pip install -r requirements.txt

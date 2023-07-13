@@ -764,6 +764,11 @@ class StreamTensor(torch.Tensor):
         super().__init__()
         self.meta = meta
 
+    # def __reduce_ex__(self, proto: int):
+    #     """Return the state of the StreamTensor object."""
+    #     import IPython
+    #     IPython.embed(using=False)
+
     def __getstate__(self) -> Tuple[torch.Tensor, StreamMetadata, List[str]]:
         """Return the state of the StreamTensor object."""
         return self.decouple()
