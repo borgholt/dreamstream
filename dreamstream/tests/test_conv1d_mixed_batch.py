@@ -17,9 +17,20 @@ def random_chunks(full_length):
     chunk_sum, remaining = 0, full_length
     while remaining > 0:
         chunks.append(min(randint(7-3, 100), remaining))
+        # chunks.append(min(randint(10, 100), remaining))
         chunk_sum = sum(chunks)
         remaining = full_length - chunk_sum
     return chunks
+
+
+# conv = nn.Sequential(
+#     nn.Conv1d(256, 128, 3, stride=2, padding=1),
+#     nn.Conv1d(128, 64, 5, stride=2, padding=2),
+#     nn.Conv1d(64, 32, 7, stride=3, padding=3)
+# )
+# conv[0] = patch_conv_1d(conv[0])
+# conv[1] = patch_conv_1d(conv[1])
+# conv[2] = patch_conv_1d(conv[2])
 
 conv = nn.Conv1d(256, 128, 7, stride=6, padding=3)
 conv = patch_conv_1d(conv)
